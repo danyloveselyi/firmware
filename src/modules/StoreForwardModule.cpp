@@ -36,15 +36,15 @@ int32_t StoreForwardModule::runOnce()
     if (moduleConfig.store_forward.enabled && is_server) {
         // Send out the message queue.
         if (this->busy) {
-            // Only send packets if the channel is less than 25% utilized and until historyReturnMax
-            if (airTime->isTxAllowedChannelUtil(true) && this->requestCount < this->historyReturnMax) {
+            // Only send packets if the channel is less than 40% utilized and until historyReturnMax
+            if (airTime->isTxAllowedChannelUtil(false) && this->requestCount < this->historyReturnMax) {
                 if (!storeForwardModule->sendPayload(this->busyTo, this->last_time)) {
                     this->requestCount = 0;
                     this->busy = false;
                 }
             }
         } else if (this->heartbeat && (!Throttle::isWithinTimespanMs(lastHeartbeat, heartbeatInterval * 1000)) &&
-                   airTime->isTxAllowedChannelUtil(true)) {
+                   airTime->isTxAllowedChannelUtil(false)) {
             lastHeartbeat = millis();
             LOG_INFO("Send heartbeat");
             meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
@@ -339,7 +339,7 @@ void StoreForwardModule::sendErrorTextMessage(NodeNum dest, bool want_response)
     if (this->busy) {
         str = "S&F - Busy. Try again shortly.";
     } else {
-        str = "S&F not permitted on the public channel.";
+        str = "S&F Error occurred.";
     }
     LOG_WARN("%s", str);
     memcpy(pr->decoded.payload.bytes, str, strlen(str));
@@ -392,7 +392,7 @@ ProcessMessage StoreForwardModule::handleReceived(const meshtastic_MeshPacket &m
                 LOG_DEBUG("Legacy Request to send");
 
                 // Send the last 60 minutes of messages.
-                if (this->busy || channels.isDefaultChannel(mp.channel)) {
+                if (this->busy) {
                     sendErrorTextMessage(getFrom(&mp), mp.decoded.want_response);
                 } else {
                     storeForwardModule->historySend(historyReturnWindow * 60, getFrom(&mp));
@@ -457,7 +457,7 @@ bool StoreForwardModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp,
             requests_history++;
             LOG_INFO("Client Request to send HISTORY");
             // Send the last 60 minutes of messages.
-            if (this->busy || channels.isDefaultChannel(mp.channel)) {
+            if (this->busy) {
                 sendErrorTextMessage(getFrom(&mp), mp.decoded.want_response);
             } else {
                 if ((p->which_variant == meshtastic_StoreAndForward_history_tag) && (p->variant.history.window > 0)) {
