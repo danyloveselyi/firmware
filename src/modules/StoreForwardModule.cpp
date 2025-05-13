@@ -184,6 +184,19 @@ meshtastic_MeshPacket *StoreForwardModule::getForPhone()
  */
 void StoreForwardModule::historyAdd(const meshtastic_MeshPacket &mp)
 {
+
+    // Добавить здесь
+    if (mp.which_payload_variant == meshtastic_MeshPacket_encrypted_tag) {
+        LOG_INFO("SF storing encrypted message from=0x%08x, to=0x%08x, id=0x%08x, size=%d bytes", mp.from, mp.to, mp.id,
+                 mp.encrypted.size);
+
+        // Опционально - вывод HEX содержимого // или используйте LOGD_ON() если такая макрофункция есть
+        char hexbuf[48] = {0};
+        for (int i = 0; i < min(16, (int)mp.encrypted.size); i++) {
+            sprintf(hexbuf + strlen(hexbuf), "%02x ", mp.encrypted.bytes[i]);
+        }
+        LOG_DEBUG("SF stored encrypted content: %s%s", hexbuf, mp.encrypted.size > 16 ? "..." : "");
+    }
     const auto &p = mp.decoded;
 
     if (this->packetHistoryTotalCount == this->records) {
@@ -385,6 +398,19 @@ ProcessMessage StoreForwardModule::handleReceived(const meshtastic_MeshPacket &m
 {
 #if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
     if (moduleConfig.store_forward.enabled) {
+
+        // Добавить код логирования здесь
+        if (mp.which_payload_variant == meshtastic_MeshPacket_encrypted_tag && is_server) {
+            LOG_INFO("SF server received encrypted message from=0x%08x, to=0x%08x, id=0x%08x, size=%d", mp.from, mp.to, mp.id,
+                     mp.encrypted.size);
+
+            // Для подробных логов
+            char hexbuf[48] = {0};
+            for (int i = 0; i < min(16, (int)mp.encrypted.size); i++) {
+                sprintf(hexbuf + strlen(hexbuf), "%02x ", mp.encrypted.bytes[i]);
+            }
+            LOG_DEBUG("SF encrypted content: %s%s", hexbuf, mp.encrypted.size > 16 ? "..." : "");
+        }
 
         if ((mp.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) && is_server) {
             auto &p = mp.decoded;

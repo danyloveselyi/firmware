@@ -329,6 +329,19 @@ void printPacket(const char *prefix, const meshtastic_MeshPacket *p)
     } else {
         out += " encrypted";
         out += DEBUG_PORT.mt_sprintf(" len=%d", p->encrypted.size + sizeof(PacketHeader));
+
+        // Add detailed logging for encrypted messages
+        if (p->from != 0 && p->from != nodeDB->getNodeNum()) { // Only for incoming messages from others
+            LOG_INFO("Received encrypted message from=0x%08x, to=0x%08x, id=0x%08x, len=%d bytes", p->from, p->to, p->id,
+                     p->encrypted.size);
+
+            // Print first few bytes in HEX format (for debugging purposes)
+            char hexbuf[48] = {0};
+            for (int i = 0; i < (16 < p->encrypted.size ? 16 : p->encrypted.size); i++) {
+                sprintf(hexbuf + strlen(hexbuf), "%02x ", p->encrypted.bytes[i]);
+            }
+            LOG_DEBUG("Encrypted content (first bytes): %s%s", hexbuf, p->encrypted.size > 16 ? "..." : "");
+        }
     }
 
     if (p->rx_time != 0)
@@ -640,6 +653,17 @@ size_t RadioInterface::beginSending(meshtastic_MeshPacket *p)
     // LOG_DEBUG("Send queued packet on mesh (txGood=%d,rxGood=%d,rxBad=%d)", rf95.txGood(), rf95.rxGood(), rf95.rxBad());
     assert(p->which_payload_variant == meshtastic_MeshPacket_encrypted_tag); // It should have already been encoded by now
 
+    LOG_INFO("Sending encrypted message from=0x%08x, to=0x%08x, id=0x%08x, size=%d bytes", p->from, p->to, p->id,
+             p->encrypted.size);
+
+    // Optionally add hex content logging for outgoing messages too
+    if (p->encrypted.size > 0) {
+        char hexbuf[48] = {0};
+        for (int i = 0; i < (16 < p->encrypted.size ? 16 : p->encrypted.size); i++) {
+            sprintf(hexbuf + strlen(hexbuf), "%02x ", p->encrypted.bytes[i]);
+        }
+        LOG_DEBUG("Outgoing encrypted content: %s%s", hexbuf, p->encrypted.size > 16 ? "..." : "");
+    }
     radioBuffer.header.from = p->from;
     radioBuffer.header.to = p->to;
     radioBuffer.header.id = p->id;
