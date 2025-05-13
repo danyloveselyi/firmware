@@ -42,6 +42,11 @@ class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<
 
   public:
     StoreForwardModule();
+    ~StoreForwardModule(); // Деструктор
+
+    // Методы для сохранения/загрузки истории сообщений
+    void saveToFlash();
+    void loadFromFlash();
 
     unsigned long lastHeartbeat = 0;
     uint32_t heartbeatInterval = 900;
@@ -83,6 +88,8 @@ class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<
 
   private:
     void populatePSRAM();
+
+    uint32_t lastSaveTime = 0; // Время последнего сохранения в флеш-память
 
     // S&F Defaults
     uint32_t historyReturnMax = 25;     // Return maximum of 25 records by default.

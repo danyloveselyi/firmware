@@ -13,6 +13,7 @@
  * @date [Insert Date]
  */
 #include "StoreForwardModule.h"
+#include "FSCommon.h"
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "RTC.h"
@@ -30,10 +31,23 @@
 
 StoreForwardModule *storeForwardModule;
 
+// Constants for file storage
+const char *SF_HISTORY_FILE = "/store_forward_history.bin";
+const char *SF_METADATA_FILE = "/store_forward_meta.bin";
+const uint32_t SF_SAVE_INTERVAL = 30 * 60 * 1000; // 30 minutes in milliseconds
+
 int32_t StoreForwardModule::runOnce()
 {
 #if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
     if (moduleConfig.store_forward.enabled && is_server) {
+        uint32_t msecNow = millis();
+
+        // Periodically save message history to flash
+        if (msecNow - lastSaveTime > SF_SAVE_INTERVAL) {
+            saveToFlash();
+            lastSaveTime = msecNow;
+        }
+
         // Send out the message queue.
         if (this->busy) {
             // Only send packets if the channel is less than 40% utilized and until historyReturnMax
@@ -89,6 +103,9 @@ void StoreForwardModule::populatePSRAM()
     LOG_DEBUG("After PSRAM init: heap %d/%d PSRAM %d/%d", memGet.getFreeHeap(), memGet.getHeapSize(), memGet.getFreePsram(),
               memGet.getPsramSize());
     LOG_DEBUG("numberOfPackets for packetHistory - %u", numberOfPackets);
+
+    // Load message history from flash
+    loadFromFlash();
 }
 
 /**
@@ -184,8 +201,7 @@ meshtastic_MeshPacket *StoreForwardModule::getForPhone()
  */
 void StoreForwardModule::historyAdd(const meshtastic_MeshPacket &mp)
 {
-
-    // Добавить здесь
+    // Log encrypted messages
     if (mp.which_payload_variant == meshtastic_MeshPacket_encrypted_tag) {
         LOG_INFO("SF storing encrypted message from=0x%08x, to=0x%08x, id=0x%08x, size=%d bytes", mp.from, mp.to, mp.id,
                  mp.encrypted.size);
@@ -218,6 +234,13 @@ void StoreForwardModule::historyAdd(const meshtastic_MeshPacket &mp)
     memcpy(this->packetHistory[this->packetHistoryTotalCount].payload, p.payload.bytes, meshtastic_Constants_DATA_PAYLOAD_LEN);
 
     this->packetHistoryTotalCount++;
+
+    // Save to flash after every 10 messages
+    static uint32_t messageCounter = 0;
+    messageCounter++;
+    if (messageCounter % 10 == 0) {
+        saveToFlash();
+    }
 }
 
 /**
@@ -399,12 +422,12 @@ ProcessMessage StoreForwardModule::handleReceived(const meshtastic_MeshPacket &m
 #if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
     if (moduleConfig.store_forward.enabled) {
 
-        // Добавить код логирования здесь
+        // Add logging code here
         if (mp.which_payload_variant == meshtastic_MeshPacket_encrypted_tag && is_server) {
             LOG_INFO("SF server received encrypted message from=0x%08x, to=0x%08x, id=0x%08x, size=%d", mp.from, mp.to, mp.id,
                      mp.encrypted.size);
 
-            // Для подробных логов
+            // For detailed logs
             char hexbuf[48] = {0};
             for (int i = 0; i < min(16, (int)mp.encrypted.size); i++) {
                 sprintf(hexbuf + strlen(hexbuf), "%02x ", mp.encrypted.bytes[i]);
@@ -583,13 +606,177 @@ bool StoreForwardModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp,
     return false; // RoutingModule sends it to the phone
 }
 
+/**
+ * Saves the current message history to flash storage.
+ * This ensures messages are preserved across reboots.
+ */
+void StoreForwardModule::saveToFlash()
+{
+#if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
+    if (!is_server || this->packetHistoryTotalCount == 0) {
+        return; // Only save if we're a server and have messages
+    }
+
+    LOG_INFO("Saving Store & Forward message history to flash (%u records)", this->packetHistoryTotalCount);
+
+    // First, save the metadata (counts, indices, etc.)
+    fs::File metaFile = FSCom.open(SF_METADATA_FILE, "w");
+    if (!metaFile) {
+        LOG_ERROR("Failed to open metadata file for writing");
+        return;
+    }
+
+    // Write total count
+    uint32_t count = this->packetHistoryTotalCount;
+    if (metaFile.write(reinterpret_cast<const uint8_t *>(&count), sizeof(count)) != sizeof(count)) {
+        LOG_ERROR("Failed to write packet count");
+        metaFile.close();
+        return;
+    }
+
+    // Write lastRequest map size
+    uint32_t mapSize = lastRequest.size();
+    if (metaFile.write(reinterpret_cast<const uint8_t *>(&mapSize), sizeof(mapSize)) != sizeof(mapSize)) {
+        LOG_ERROR("Failed to write map size");
+        metaFile.close();
+        return;
+    }
+
+    // Write lastRequest map entries
+    for (const auto &entry : lastRequest) {
+        if (metaFile.write(reinterpret_cast<const uint8_t *>(&entry.first), sizeof(entry.first)) != sizeof(entry.first) ||
+            metaFile.write(reinterpret_cast<const uint8_t *>(&entry.second), sizeof(entry.second)) != sizeof(entry.second)) {
+            LOG_ERROR("Failed to write map entry");
+            metaFile.close();
+            return;
+        }
+    }
+
+    metaFile.close();
+
+    // Now save the actual message history
+    fs::File histFile = FSCom.open(SF_HISTORY_FILE, "w");
+    if (!histFile) {
+        LOG_ERROR("Failed to open history file for writing");
+        return;
+    }
+
+    // Write all packet history records
+    for (uint32_t i = 0; i < this->packetHistoryTotalCount; i++) {
+        if (histFile.write(reinterpret_cast<const uint8_t *>(&this->packetHistory[i]), sizeof(PacketHistoryStruct)) !=
+            sizeof(PacketHistoryStruct)) {
+            LOG_ERROR("Failed to write packet history record %u", i);
+            break;
+        }
+    }
+
+    histFile.close();
+    LOG_INFO("Store & Forward data saved to flash successfully");
+#endif
+}
+
+/**
+ * Loads the message history from flash storage.
+ * This restores messages after a reboot.
+ */
+void StoreForwardModule::loadFromFlash()
+{
+#if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
+    if (!is_server) {
+        return; // Only load if we're a server
+    }
+
+    // First check if the files exist
+    if (!FSCom.exists(SF_METADATA_FILE) || !FSCom.exists(SF_HISTORY_FILE)) {
+        LOG_INFO("No Store & Forward history files found");
+        return;
+    }
+
+    // Load metadata first
+    fs::File metaFile = FSCom.open(SF_METADATA_FILE, "r");
+    if (!metaFile) {
+        LOG_ERROR("Failed to open metadata file for reading");
+        return;
+    }
+
+    // Read total count
+    uint32_t count = 0;
+    if (metaFile.readBytes(reinterpret_cast<char *>(&count), sizeof(count)) != sizeof(count)) {
+        LOG_ERROR("Failed to read packet count");
+        metaFile.close();
+        return;
+    }
+
+    // Make sure we don't exceed our buffer
+    if (count > this->records) {
+        LOG_WARN("Loaded history exceeds buffer size (%u > %u), truncating", count, this->records);
+        count = this->records;
+    }
+
+    // Read lastRequest map size
+    uint32_t mapSize = 0;
+    if (metaFile.readBytes(reinterpret_cast<char *>(&mapSize), sizeof(mapSize)) != sizeof(mapSize)) {
+        LOG_ERROR("Failed to read map size");
+        metaFile.close();
+        return;
+    }
+
+    // Read lastRequest map entries
+    lastRequest.clear();
+    for (uint32_t i = 0; i < mapSize; i++) {
+        NodeNum key;
+        uint32_t value;
+        if (metaFile.readBytes(reinterpret_cast<char *>(&key), sizeof(key)) != sizeof(key) ||
+            metaFile.readBytes(reinterpret_cast<char *>(&value), sizeof(value)) != sizeof(value)) {
+            LOG_ERROR("Failed to read map entry");
+            metaFile.close();
+            return;
+        }
+
+        // Adjust value to be within the loaded history range
+        if (value > count) {
+            value = count;
+        }
+
+        lastRequest[key] = value;
+    }
+
+    metaFile.close();
+
+    // Now load the actual message history
+    fs::File histFile = FSCom.open(SF_HISTORY_FILE, "r");
+    if (!histFile) {
+        LOG_ERROR("Failed to open history file for reading");
+        return;
+    }
+
+    // Read all packet history records
+    for (uint32_t i = 0; i < count; i++) {
+        if (histFile.read(reinterpret_cast<uint8_t *>(&this->packetHistory[i]), sizeof(PacketHistoryStruct)) !=
+            sizeof(PacketHistoryStruct)) {
+            LOG_ERROR("Failed to read packet history record %u", i);
+            count = i; // Adjust count to what we actually read
+            break;
+        }
+    }
+
+    this->packetHistoryTotalCount = count;
+    histFile.close();
+
+    LOG_INFO("Loaded %u Store & Forward messages from flash", count);
+#endif
+}
+
+/**
+ * Constructor for the StoreForwardModule class.
+ * Initializes the module and loads message history from flash if available.
+ */
 StoreForwardModule::StoreForwardModule()
     : concurrency::OSThread("StoreForward"),
       ProtobufModule("StoreForward", meshtastic_PortNum_STORE_FORWARD_APP, &meshtastic_StoreAndForward_msg)
 {
-
 #if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
-
+    lastSaveTime = millis();
     isPromiscuous = true; // Brown chicken brown cow
 
     if (StoreForward_Dev) {
@@ -629,7 +816,7 @@ StoreForwardModule::StoreForwardModule()
                     else
                         this->heartbeat = false;
 
-                    // Popupate PSRAM with our data structures.
+                    // Populate PSRAM with our data structures.
                     this->populatePSRAM();
                     is_server = true;
                 } else {
@@ -649,4 +836,14 @@ StoreForwardModule::StoreForwardModule()
         disable();
     }
 #endif
+}
+
+/**
+ * Destructor for the StoreForwardModule class.
+ * Saves message history to flash before destruction.
+ */
+StoreForwardModule::~StoreForwardModule()
+{
+    // Save history to flash when module is destroyed
+    saveToFlash();
 }
