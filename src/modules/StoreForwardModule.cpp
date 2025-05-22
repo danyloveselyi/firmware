@@ -24,6 +24,7 @@
 #include "mesh-pb-constants.h"
 #include "mesh/generated/meshtastic/storeforward.pb.h"
 #include "modules/ModuleDev.h"
+#include "StoreForwardPersistence.h"
 #include <Arduino.h>
 #include <iterator>
 #include <map>
@@ -89,6 +90,9 @@ void StoreForwardModule::populatePSRAM()
     LOG_DEBUG("After PSRAM init: heap %d/%d PSRAM %d/%d", memGet.getFreeHeap(), memGet.getHeapSize(), memGet.getFreePsram(),
               memGet.getPsramSize());
     LOG_DEBUG("numberOfPackets for packetHistory - %u", numberOfPackets);
+
+   // Add loading history from flash memory
+    StoreForwardPersistence::loadFromFlash(this);
 }
 
 /**
@@ -184,6 +188,18 @@ meshtastic_MeshPacket *StoreForwardModule::getForPhone()
  */
 void StoreForwardModule::historyAdd(const meshtastic_MeshPacket &mp)
 {
+    // Log encrypted messages
+    if (mp.which_payload_variant == meshtastic_MeshPacket_encrypted_tag) {
+        LOG_INFO("SF storing encrypted message from=0x%08x, to=0x%08x, id=0x%08x, size=%d bytes", mp.from, mp.to, mp.id,
+                 mp.encrypted.size);
+
+        // Optional - output HEX content
+        char hexbuf[48] = {0};
+        for (int i = 0; i < min(16, (int)mp.encrypted.size); i++) {
+            sprintf(hexbuf + strlen(hexbuf), "%02x ", mp.encrypted.bytes[i]);
+        }
+        LOG_DEBUG("SF stored encrypted content: %s%s", hexbuf, mp.encrypted.size > 16 ? "..." : "");
+    }
     const auto &p = mp.decoded;
 
     if (this->packetHistoryTotalCount == this->records) {
@@ -205,6 +221,9 @@ void StoreForwardModule::historyAdd(const meshtastic_MeshPacket &mp)
     memcpy(this->packetHistory[this->packetHistoryTotalCount].payload, p.payload.bytes, meshtastic_Constants_DATA_PAYLOAD_LEN);
 
     this->packetHistoryTotalCount++;
+
+    // Save immediately after adding a new message, no need to wait or count
+    StoreForwardPersistence::saveToFlash(this);
 }
 
 /**
@@ -623,4 +642,11 @@ StoreForwardModule::StoreForwardModule()
         disable();
     }
 #endif
+}
+
+// Add a destructor to save history when destroyed
+StoreForwardModule::~StoreForwardModule()
+{
+    // Save history to flash when module is destroyed
+    StoreForwardPersistence::saveToFlash(this);
 }

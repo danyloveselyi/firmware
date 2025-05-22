@@ -9,6 +9,15 @@
 #include <functional>
 #include <unordered_map>
 
+// Forward declare StoreForwardModule class first
+class StoreForwardModule;
+
+// Now declare the StoreForwardPersistence namespace
+namespace StoreForwardPersistence {
+    void saveToFlash(StoreForwardModule *module);
+    void loadFromFlash(StoreForwardModule *module);
+}
+
 struct PacketHistoryStruct {
     uint32_t time;
     uint32_t to;
@@ -40,8 +49,15 @@ class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<
     // Unordered_map stores the last request for each nodeNum (`to` field)
     std::unordered_map<NodeNum, uint32_t> lastRequest;
 
+    // Adding Friendships to Access Private Class Members
+    friend void StoreForwardPersistence::saveToFlash(StoreForwardModule *module);
+    friend void StoreForwardPersistence::loadFromFlash(StoreForwardModule *module);
+    // Removed the friend declaration for checkSaveInterval
+
   public:
     StoreForwardModule();
+    // Adding a destructor
+    ~StoreForwardModule();
 
     unsigned long lastHeartbeat = 0;
     uint32_t heartbeatInterval = 900;
