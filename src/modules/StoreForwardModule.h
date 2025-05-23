@@ -1,127 +1,201 @@
 #pragma once
 
+// Необходимые включения
 #include "ProtobufModule.h"
+#include "Router.h"
 #include "concurrency/OSThread.h"
-#include "mesh/generated/meshtastic/storeforward.pb.h"
-
 #include "configuration.h"
-#include <Arduino.h>
+#include "mesh/generated/meshtastic/storeforward.pb.h" // Важно включить этот файл!
 #include <functional>
-#include <unordered_map>
+#include <map>
+#include <unordered_set>
+#include <vector>
 
-// Forward declare StoreForwardModule class first
-class StoreForwardModule;
+// Forward declarations
+class StoreForwardPersistence;
 
-// Now declare the StoreForwardPersistence namespace
-namespace StoreForwardPersistence {
-    void saveToFlash(StoreForwardModule *module);
-    void loadFromFlash(StoreForwardModule *module);
-}
+/**
+ * Structure to store message history
+ */
+class MessageHistory
+{
+  public:
+    std::unordered_set<uint32_t> receivedMessageIds;
+    uint32_t highestKnownId = 0;
+    bool changed = false;
 
-struct PacketHistoryStruct {
-    uint32_t time;
-    uint32_t to;
-    uint32_t from;
-    uint32_t id;
-    uint8_t channel;
-    uint32_t reply_id;
-    bool emoji;
-    uint8_t payload[meshtastic_Constants_DATA_PAYLOAD_LEN];
-    pb_size_t payload_size;
+    void recordReceivedMessage(uint32_t messageId);
 };
 
-class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<meshtastic_StoreAndForward>
+/**
+ * Structure to store message history packets
+ */
+typedef struct {
+    time_t time = 0;
+    uint32_t to = 0;
+    uint32_t from = 0;
+    uint32_t id = 0;
+    uint8_t channel = 0;
+    uint32_t reply_id = 0;
+    bool emoji = false;
+    uint8_t payload_size = 0;
+    uint8_t payload[meshtastic_Constants_DATA_PAYLOAD_LEN];
+} PacketHistoryStruct;
+
+/**
+ * Store and Forward message handling for meshtastic
+ */
+class StoreForwardModule : public ProtobufModule<meshtastic_StoreAndForward>, public concurrency::OSThread
 {
-    bool busy = 0;
-    uint32_t busyTo = 0;
-    char routerMessage[meshtastic_Constants_DATA_PAYLOAD_LEN] = {0};
+    uint8_t serverPageCount = 0; // The server sends this to clients for free
 
-    PacketHistoryStruct *packetHistory = 0;
+    // We use historyReturnWindow as a history window size in sendToMesh (below)
+    // For now we assume a small window for all incoming messages (last 6 hours)
+    uint32_t historyReturnWindow = 6 * 60 * 60;
+    uint32_t historyReturnMax = 250; // Maximum number of packets to return 'at once'
+    bool busy = false;               // don't start another request if we're already busy
+    bool heartbeat = true;
+    uint32_t requestCount = 0;    // How many messages have we already handled
+    uint32_t packetTimeMax = 500; // Time between packets when there's no throttling
     uint32_t packetHistoryTotalCount = 0;
+    uint32_t records = 0; // Number of available records
     uint32_t last_time = 0;
-    uint32_t requestCount = 0;
-
-    uint32_t packetTimeMax = 5000; // Interval between sending history packets as a server.
-
-    bool is_client = false;
+    uint32_t heartbeatInterval = 300;
+    uint32_t lastHeartbeat = 0;
+    NodeNum busyTo = 0;
     bool is_server = false;
+    bool ignoreIncoming = false;
 
-    // Unordered_map stores the last request for each nodeNum (`to` field)
-    std::unordered_map<NodeNum, uint32_t> lastRequest;
-
-    // Adding Friendships to Access Private Class Members
-    friend void StoreForwardPersistence::saveToFlash(StoreForwardModule *module);
-    friend void StoreForwardPersistence::loadFromFlash(StoreForwardModule *module);
-    // Removed the friend declaration for checkSaveInterval
+    // Map of specific missing messages for each client
+    std::map<NodeNum, std::vector<uint32_t>> missingMessages;
 
   public:
-    StoreForwardModule();
-    // Adding a destructor
-    ~StoreForwardModule();
+    PacketHistoryStruct *packetHistory = nullptr;
+    std::map<NodeNum, uint32_t> lastRequest;
 
-    unsigned long lastHeartbeat = 0;
-    uint32_t heartbeatInterval = 900;
+    // Statistics counters
+    uint32_t requestsReceived = 0; // Total number of SF requests received
+    uint32_t historyRequests = 0;  // Number of history requests received
+    uint32_t retryDelay = 0;       // Timestamp for retry after error/busy
+
+    /** Constructor
+     * name is for debugging output
+     */
+    StoreForwardModule();
 
     /**
-     Update our local reference of when we last saw that node.
-     @return 0 if we have never seen that node before otherwise return the last time we saw the node.
+     * Send a retransmission request for a missing message.
+     * A router can respond to this request if available
+     */
+    void requestRouterRetransmission(NodeNum to, uint32_t messageId);
+
+    /**
+     * Send a store and forward router stats request to a specific node.
+     * No request payload is needed.
+     */
+    void requestStatsFromRouter(NodeNum to);
+
+    /**
+     * Send a request to a store and forward router asking for messages
+     * after the specified time. If seconds_back is 0, all known history is returned.
+     */
+    void historyRetrieve(uint32_t seconds_back = 0, uint32_t to = NODENUM_BROADCAST);
+
+    /**
+     * Stores a received packet in the history for later forwarding.
+     * This is called by handleReceived()
      */
     void historyAdd(const meshtastic_MeshPacket &mp);
-    void statsSend(uint32_t to);
-    void historySend(uint32_t secAgo, uint32_t to);
+
+    /**
+     * Sends messages from the message history to the specified recipient.
+     */
+    void historySend(uint32_t since_time, uint32_t to);
+
+    /**
+     * Get an incoming packet for phone or client to consume
+     * This is only called by PhoneAPI.cpp
+     */
+    meshtastic_MeshPacket *getForPhone();
+
+    // Handle a received message
+    virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
+
+    /**
+     * Gets module statistics for API consumption
+     * Placeholder implementation to avoid undefined type issues
+     */
+    void getModuleStats(void *stats)
+    {
+        // Simplified implementation to avoid errors with undefined types
+        // This will need proper implementation when the types are available
+    }
+
+    /**
+     * @brief Set whether to ignore incoming messages
+     *
+     * @param ignore If true, ignore incoming messages
+     */
+    void setIgnoreIncoming(bool ignore);
+
+  protected:
+    friend class StoreForwardPersistence;
+
+    /**
+     * Return true if this packet is one we want to store/forward
+     */
+    virtual bool wantPacket(const meshtastic_MeshPacket *p) override
+    {
+        return p->decoded.portnum == meshtastic_PortNum_STORE_FORWARD_APP ||
+               (p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && is_server);
+    }
+
+    /**
+     * @brief Handle a received protobuf message
+     *
+     * @param mp The received mesh packet
+     * @param p The store and forward message
+     * @return true if the message was handled
+     */
+    virtual bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_StoreAndForward *p) override;
+
+    /**
+     * Populates the PSRAM with data to be sent later when a device is out of range.
+     */
+    void populatePSRAM();
+
+    /**
+     * This implements the pure virtual function from MeshModule
+     */
+    virtual int32_t runOnce() override;
+
+    /**
+     * Returns the number of available packets in the message history for a specified destination node.
+     */
     uint32_t getNumAvailablePackets(NodeNum dest, uint32_t last_time);
 
     /**
-     * Send our payload into the mesh
+     * Send a Store and Forward message to the specified node.
      */
-    bool sendPayload(NodeNum dest = NODENUM_BROADCAST, uint32_t packetHistory_index = 0);
-    meshtastic_MeshPacket *preparePayload(NodeNum dest, uint32_t packetHistory_index, bool local = false);
     void sendMessage(NodeNum dest, const meshtastic_StoreAndForward &payload);
+
+    /**
+     * Send a Store and Forward control message to the specified node.
+     */
     void sendMessage(NodeNum dest, meshtastic_StoreAndForward_RequestResponse rr);
-    void sendErrorTextMessage(NodeNum dest, bool want_response);
-    meshtastic_MeshPacket *getForPhone();
-    // Returns true if we are configured as server AND we could allocate PSRAM.
-    bool isServer() { return is_server; }
 
-    /*
-      -Override the wantPacket method.
-    */
-    virtual bool wantPacket(const meshtastic_MeshPacket *p) override
-    {
-        switch (p->decoded.portnum) {
-        case meshtastic_PortNum_TEXT_MESSAGE_APP:
-        case meshtastic_PortNum_STORE_FORWARD_APP:
-            return true;
-        default:
-            return false;
-        }
-    }
+    /**
+     * Sends a payload to a specified destination node using the store and forward mechanism.
+     */
+    bool sendPayload(NodeNum dest, uint32_t last_time);
 
-  private:
-    void populatePSRAM();
-
-    // S&F Defaults
-    uint32_t historyReturnMax = 25;     // Return maximum of 25 records by default.
-    uint32_t historyReturnWindow = 240; // Return history of last 4 hours by default.
-    uint32_t records = 0;               // Calculated
-    bool heartbeat = false;             // No heartbeat.
-
-    // stats
-    uint32_t requests = 0;         // Number of times any client sent a request to the S&F.
-    uint32_t requests_history = 0; // Number of times the history was requested.
-
-    uint32_t retry_delay = 0; // If server is busy, retry after this delay (in ms).
-
-  protected:
-    virtual int32_t runOnce() override;
-
-    /** Called to handle a particular incoming message
-
-    @return ProcessMessage::STOP if you've guaranteed you've handled this message and no other handlers should be considered for
-    it
-    */
-    virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
-    virtual bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_StoreAndForward *p);
+    /**
+     * Prepares a payload to be sent to a specified destination node from the S&F packet history.
+     */
+    meshtastic_MeshPacket *preparePayload(NodeNum dest, uint32_t last_time, bool local = false);
 };
 
+/**
+ * Global instance of StoreForwardModule
+ */
 extern StoreForwardModule *storeForwardModule;

@@ -27,6 +27,8 @@ class SafeFile : public Print
   public:
     explicit SafeFile(char const *filepath, bool fullAtomic = false);
 
+    bool isOpen() const { return f && f != false; }
+
     virtual size_t write(uint8_t);
     virtual size_t write(const uint8_t *buffer, size_t size);
 
@@ -44,7 +46,7 @@ class SafeFile : public Print
     String filename;
     File f;
     bool fullAtomic;
-    uint8_t hash = 0;
+    uint8_t hash = 0; // Initialize hash to zero
 };
 
 #endif

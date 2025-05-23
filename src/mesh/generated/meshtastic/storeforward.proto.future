@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package meshtastic;
+
+message StoreAndForward {
+    enum RequestResponse {
+        UNSET = 0;
+        // Client to Server
+        CLIENT_ERROR = 1;
+        CLIENT_ABORT = 2;
+        CLIENT_HISTORY = 3;
+        CLIENT_PING = 4;
+        CLIENT_PONG = 5;
+        CLIENT_STATS = 6;
+
+        // Server to Client
+        ROUTER_ERROR = 101;
+        ROUTER_BUSY = 102;
+        ROUTER_HISTORY = 103;
+        ROUTER_PING = 104;
+        ROUTER_PONG = 105;
+        ROUTER_STATS = 106;
+        ROUTER_HEARTBEAT = 107;
+        ROUTER_TEXT_DIRECT = 108;
+        ROUTER_TEXT_BROADCAST = 109;
+    }
+    RequestResponse rr = 1;
+
+    oneof variant {
+        // For RequestResponse == ROUTER_HEARTBEAT
+        HeartbeatPayload heartbeat = 2;
+
+        // For RequestResponse == ROUTER_STATS
+        StatsPayload stats = 3;
+
+        // For RequestResponse == ROUTER_HISTORY
+        HistoryPayload history = 4;
+
+        // For RequestResponse == ROUTER_TEXT_DIRECT & ROUTER_TEXT_BROADCAST
+        TextPayload text = 5;
+        
+        // For CLIENT_HISTORY with known message IDs
+        KnownIdsPayload known_ids = 6;
+    }
+
+    message HeartbeatPayload {
+        uint32 period = 1; // seconds between heartbeats
+        uint32 secondary = 2; // Number of secondary routers in range
+    }
+
+    message StatsPayload {
+        uint32 messages_total = 1;
+        uint32 messages_saved = 2;
+        uint32 messages_max = 3;
+        uint32 up_time = 4; // seconds of uptime
+        uint32 requests = 5; // Number of total requests
+        uint32 requests_history = 6; // Number of history requests
+        bool heartbeat = 7; // Is heartbeat active?
+        uint32 return_max = 8; // Max messages to return
+        uint32 return_window = 9; // in Minutes
+    }
+
+    message HistoryPayload {
+        uint32 window = 1;  // Window in ms
+        uint32 last_request = 2;
+        uint32 history_messages = 3;
+    }
+
+    message TextPayload {
+        bytes bytes = 1; // Raw bytes of the message
+        uint32 size = 2; // Number of bytes in the message
+    }
+    
+    // New message for sending known message IDs
+    message KnownIdsPayload {
+        uint32 id_count = 1;     // Number of IDs in the array
+        repeated uint32 ids = 2;  // Array of message IDs already known to the client
+    }
+}

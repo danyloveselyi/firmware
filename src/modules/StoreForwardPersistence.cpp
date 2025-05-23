@@ -1,230 +1,209 @@
-#include "StoreForwardPersistence.h"
-#include "NodeDB.h"
-#include "configuration.h"
+#include "modules/StoreForwardPersistence.h"
 #include "FSCommon.h"
-#include <algorithm>  // Add for std::min
+#include "SafeFile.h"
+#include "configuration.h"
 
-namespace StoreForwardPersistence {
+// Names of files for storing Store & Forward data
+#define STORE_FORWARD_FILENAME "/store_forward.bin"    // Main file for message history
+#define STORE_FORWARD_MSGIDS_FILENAME "/sf_msgids.bin" // File for storing known message IDs
 
-// Make lastSaveTime and messageCounter static as they're only used within this namespace
-static unsigned long lastSaveTime = 0;
-static uint32_t messageCounter = 0;
+/**
+ * Save the Store & Forward message history to flash
+ * @param module Pointer to the module whose history should be saved
+ * @return true if successful, false otherwise
+ */
+bool StoreForwardPersistence::saveToFlash(StoreForwardModule *module)
+{
+    // Check for empty data - don't save if there are no messages
+    if (!module || module->packetHistoryTotalCount == 0) {
+        LOG_DEBUG("S&F: No messages to save to flash");
+        return true;
+    }
 
-// Helper function to print message content in readable format
-static void logMessageContent(const PacketHistoryStruct *msg, const char* prefix) {
-    if (!msg || msg->payload_size == 0) return;
-    
-    // Check if payload contains printable text by scanning it
-    bool isPrintable = true;
-    for (uint32_t i = 0; i < msg->payload_size; i++) {
-        char c = (char)msg->payload[i];
-        // Check for common text characters (printable ASCII + some common extended chars)
-        if (c != 0 && (c < 32 || c > 126) && c != '\n' && c != '\r' && c != '\t') {
-            isPrintable = false;
-            break;
+    LOG_INFO("S&F: Saving %u messages to flash", module->packetHistoryTotalCount);
+
+    // Open file with safe write (prevents corruption during power failure)
+    SafeFile file(STORE_FORWARD_FILENAME);
+    if (!file.isOpen()) {
+        LOG_ERROR("S&F: Failed to open file for writing");
+        return false;
+    }
+
+    // Write header (version and record count)
+    uint8_t version = 1;
+    if (!file.write(version)) {
+        LOG_ERROR("S&F: Error writing file version");
+        file.close();
+        return false;
+    }
+
+    if (!file.write((uint8_t *)&module->packetHistoryTotalCount, sizeof(module->packetHistoryTotalCount))) {
+        LOG_ERROR("S&F: Error writing message count");
+        file.close();
+        return false;
+    }
+
+    // Write each message record
+    for (uint32_t i = 0; i < module->packetHistoryTotalCount; i++) {
+        if (!file.write((uint8_t *)&module->packetHistory[i], sizeof(PacketHistoryStruct))) {
+            LOG_ERROR("S&F: Error writing message %u", i);
+            file.close();
+            return false;
         }
     }
-    
-    if (isPrintable) {
-        // It's likely text, so print it as text
-        char textBuffer[meshtastic_Constants_DATA_PAYLOAD_LEN + 1] = {0};
-        memcpy(textBuffer, msg->payload, msg->payload_size);
-        textBuffer[msg->payload_size] = '\0'; // Ensure null termination
-        
-        LOG_INFO("%s TEXT MESSAGE: \"%s\"", prefix, textBuffer);
-    } else {
-        // Not plain text, print as hex
-        char hexbuf[meshtastic_Constants_DATA_PAYLOAD_LEN * 3 + 1] = {0};
-        for (uint32_t i = 0; i < msg->payload_size; i++) {
-            sprintf(hexbuf + strlen(hexbuf), "%02x ", msg->payload[i]);
-            if (i == 31 && msg->payload_size > 32) {  // Show at most 32 bytes in hex
-                strcat(hexbuf, "...");
+
+    // Save lastRequest map for resumable sending
+    size_t entriesCount = module->lastRequest.size();
+    if (!file.write((uint8_t *)&entriesCount, sizeof(entriesCount))) {
+        LOG_ERROR("S&F: Error writing lastRequest map size");
+        file.close();
+        return false;
+    }
+
+    // Write each key-value pair from lastRequest map
+    for (const auto &entry : module->lastRequest) {
+        if (!file.write((uint8_t *)&entry.first, sizeof(entry.first)) ||
+            !file.write((uint8_t *)&entry.second, sizeof(entry.second))) {
+            LOG_ERROR("S&F: Error writing lastRequest entry");
+            file.close();
+            return false;
+        }
+    }
+
+    // Close file with successful completion check
+    if (!file.close()) {
+        LOG_ERROR("S&F: Error closing message history file");
+        return false;
+    }
+
+    LOG_INFO("S&F: Successfully saved message history to flash");
+    return true;
+}
+
+/**
+ * Load the Store & Forward message history from flash
+ * @param module Pointer to the module whose history should be loaded
+ * @return true if successful, false otherwise
+ */
+bool StoreForwardPersistence::loadFromFlash(StoreForwardModule *module)
+{
+    // Check file existence and module pointer validity
+    if (!module) {
+        LOG_ERROR("S&F: Invalid module pointer");
+        return false;
+    }
+
+    if (!FSCom.exists(STORE_FORWARD_FILENAME)) {
+        LOG_DEBUG("S&F: No saved message history found");
+        return false;
+    }
+
+    // Open file for reading
+    File file = FSCom.open(STORE_FORWARD_FILENAME, FILE_O_READ);
+    if (!file) {
+        LOG_ERROR("S&F: Failed to open message history file");
+        return false;
+    }
+
+    // Check file format version
+    uint8_t version = file.read();
+    if (version != 1) {
+        LOG_ERROR("S&F: Unsupported history file version: %d", version);
+        file.close();
+        return false;
+    }
+
+    // Read message count
+    uint32_t count;
+    if (file.read((uint8_t *)&count, sizeof(count)) != sizeof(count)) {
+        LOG_ERROR("S&F: Error reading message count");
+        file.close();
+        return false;
+    }
+
+    // Safety check - don't exceed allocated memory
+    if (count > module->records) {
+        LOG_WARN("S&F: Saved history has %u messages, but only %u slots allocated", count, module->records);
+        count = module->records; // Limit the number of messages to read
+    }
+
+    // Read all message records
+    for (uint32_t i = 0; i < count; i++) {
+        if (file.read((uint8_t *)&module->packetHistory[i], sizeof(PacketHistoryStruct)) != sizeof(PacketHistoryStruct)) {
+            LOG_ERROR("S&F: Error reading message %u from file", i);
+            file.close();
+            module->packetHistoryTotalCount = i; // Save what we managed to read
+            return false;
+        }
+    }
+
+    // Update total message count
+    module->packetHistoryTotalCount = count;
+
+    // Try to read lastRequest map if present in the file
+    // Fault tolerance: it's okay if this part fails
+    size_t entriesCount = 0;
+    if (file.read((uint8_t *)&entriesCount, sizeof(entriesCount)) == sizeof(entriesCount)) {
+        module->lastRequest.clear();
+
+        // Read each key-value pair
+        for (size_t i = 0; i < entriesCount; i++) {
+            NodeNum nodeId;
+            uint32_t lastIdx;
+
+            if (file.read((uint8_t *)&nodeId, sizeof(nodeId)) != sizeof(nodeId) ||
+                file.read((uint8_t *)&lastIdx, sizeof(lastIdx)) != sizeof(lastIdx)) {
+                LOG_WARN("S&F: Error reading lastRequest entry %u", (unsigned)i);
                 break;
             }
+
+            // Verify index is within valid range
+            if (lastIdx <= module->packetHistoryTotalCount) {
+                module->lastRequest[nodeId] = lastIdx;
+            } else {
+                // Reset index if out of valid range
+                module->lastRequest[nodeId] = 0;
+                LOG_WARN("S&F: lastRequest index out of range for node %u, reset to 0", nodeId);
+            }
         }
-        LOG_INFO("%s BINARY DATA: %s", prefix, hexbuf);
+        LOG_INFO("S&F: Loaded %u lastRequest entries", (unsigned)module->lastRequest.size());
     }
+
+    file.close();
+
+    LOG_INFO("S&F: Loaded %u messages from flash", count);
+    return true;
 }
 
-void saveToFlash(StoreForwardModule *module)
+/**
+ * Remove the Store & Forward message history file
+ * @return true if successful or if file doesn't exist, false otherwise
+ */
+bool StoreForwardPersistence::clearFlash()
 {
-    // Update lastSaveTime when saving
-    lastSaveTime = millis();
-    
-    if (module && module->packetHistoryTotalCount > 0) {
-        LOG_INFO("S&F: Saving messages to flash - count: %u, time: %lums since boot", 
-                 module->packetHistoryTotalCount, millis());
-#ifdef FSCom
-        LOG_INFO("S&F: Creating directory /history if needed");
-        FSCom.mkdir("/history");
-        
-        LOG_INFO("S&F: Opening file /history/sf for writing");
-        File storeAndForward = FSCom.open("/history/sf", FILE_O_WRITE);
-        if (storeAndForward) {
-            uint32_t totalSize = sizeof(PacketHistoryStruct) * module->packetHistoryTotalCount;
-            LOG_INFO("S&F: Writing %u bytes to flash (%u messages)", 
-                     totalSize, module->packetHistoryTotalCount);
-            
-            // Debug: Print first message details with full content
-            if (module->packetHistoryTotalCount > 0) {
-                PacketHistoryStruct *firstMsg = &module->packetHistory[0];
-                LOG_INFO("S&F: First message - from: 0x%08x, to: 0x%08x, time: %u, size: %u bytes", 
-                         firstMsg->from, firstMsg->to, firstMsg->time, firstMsg->payload_size);
-                
-                // Log full message content in appropriate format
-                logMessageContent(firstMsg, "S&F: First message content -");
-            }
-            
-            uint32_t written = storeAndForward.write((uint8_t *)module->packetHistory, totalSize);
-            if (written == totalSize) {
-                LOG_INFO("S&F: Successfully stored %u messages (%u bytes) to flash", 
-                         module->packetHistoryTotalCount, written);
-                messageCounter++;
-                LOG_INFO("S&F: Total save operations since boot: %u", messageCounter);
-            } else {
-                LOG_ERROR("S&F: Error writing messages to flash: %u of %u bytes written", 
-                          written, totalSize);
-            }
-            storeAndForward.close();
-            LOG_INFO("S&F: File closed");
-            
-            // Save the lastRequest map to track what each user has already received
-            LOG_INFO("S&F: Saving user request history");
-            File userRequestsFile = FSCom.open("/history/sf_users", FILE_O_WRITE);
-            if (userRequestsFile) {
-                // Format: [NodeNum (4 bytes)][lastRequestIndex (4 bytes)] for each entry
-                size_t entriesCount = module->lastRequest.size();
-                LOG_INFO("S&F: Writing request history for %u users", entriesCount);
-                
-                // Write number of entries first
-                userRequestsFile.write((uint8_t*)&entriesCount, sizeof(entriesCount));
-                
-                // Write each user's last request position
-                for (const auto &entry : module->lastRequest) {
-                    userRequestsFile.write((uint8_t*)&entry.first, sizeof(entry.first));      // NodeNum
-                    userRequestsFile.write((uint8_t*)&entry.second, sizeof(entry.second));    // lastRequest index
-                    LOG_INFO("S&F: User 0x%08x last request: %u", entry.first, entry.second);
-                }
-                userRequestsFile.close();
-                LOG_INFO("S&F: User request history saved successfully");
-            } else {
-                LOG_ERROR("S&F: Could not open user requests file for writing");
-            }
-        } else {
-            LOG_ERROR("S&F: Could not open history file for writing");
-        }
-#else
-        LOG_WARN("S&F: Filesystem not implemented, can't save messages");
-#endif
-    } else {
-        LOG_INFO("S&F: No messages to save or module not initialized");
+    // Check if file exists before attempting deletion
+    if (!FSCom.exists(STORE_FORWARD_FILENAME)) {
+        LOG_DEBUG("S&F: History file already doesn't exist");
+        return true; // File already doesn't exist, consider it a success
     }
-}
 
-void loadFromFlash(StoreForwardModule *module)
-{
-    LOG_INFO("S&F: Attempting to load messages from flash");
-    
-    if (!module || !module->packetHistory) {
-        LOG_WARN("S&F: Module not initialized, skipping history load");
-        return;
-    }
-    
-#ifdef FSCom
-    LOG_INFO("S&F: Checking if history file exists");
-    if (FSCom.exists("/history/sf")) {
-        LOG_INFO("S&F: Opening history file for reading");
-        File storeAndForward = FSCom.open("/history/sf", FILE_O_READ);
-        if (storeAndForward) {
-            size_t fileSize = storeAndForward.size();
-            uint32_t numRecords = fileSize / sizeof(PacketHistoryStruct);
-            
-            LOG_INFO("S&F: Found file with %u bytes (%u potential messages)", 
-                     fileSize, numRecords);
-            
-            // Limit to available buffer size - use std::min instead of MIN macro
-            uint32_t recordsToLoad = std::min(numRecords, module->records);
-            LOG_INFO("S&F: Will load up to %u messages (buffer capacity: %u)", 
-                     recordsToLoad, module->records);
-            
-            if (recordsToLoad > 0) {
-                LOG_INFO("S&F: Reading %u bytes from flash", 
-                         sizeof(PacketHistoryStruct) * recordsToLoad);
-                uint32_t bytesRead = storeAndForward.read((uint8_t *)module->packetHistory, 
-                                                          sizeof(PacketHistoryStruct) * recordsToLoad);
-                                                          
-                module->packetHistoryTotalCount = recordsToLoad;
-                
-                // Debug: Print details of loaded messages with full content
-                LOG_INFO("S&F: Loaded %u messages from flash (%u bytes)", recordsToLoad, bytesRead);
-                if (recordsToLoad > 0) {
-                    for (uint32_t i = 0; i < std::min((uint32_t)3, recordsToLoad); i++) {
-                        PacketHistoryStruct *msg = &module->packetHistory[i];
-                        LOG_INFO("S&F: Message %u - from: 0x%08x, to: 0x%08x, time: %u, size: %u bytes", 
-                                i, msg->from, msg->to, msg->time, msg->payload_size);
-                        
-                        // Log full message content in appropriate format
-                        char prefix[40];
-                        snprintf(prefix, sizeof(prefix), "S&F: Message %u content -", i);
-                        logMessageContent(msg, prefix);
-                    }
-                    
-                    if (recordsToLoad > 3) {
-                        LOG_INFO("S&F: (+ %u more messages)", recordsToLoad - 3);
-                    }
-                }
-            } else {
-                LOG_INFO("S&F: No records to load from history file");
-            }
-            storeAndForward.close();
-            LOG_INFO("S&F: File closed");
-        } else {
-            LOG_ERROR("S&F: Could not open history file for reading");
-        }
+    // Delete the file
+    bool result = FSCom.remove(STORE_FORWARD_FILENAME);
+    if (result) {
+        LOG_INFO("S&F: Message history successfully deleted from flash");
     } else {
-        LOG_INFO("S&F: No history file found, starting with empty history");
+        LOG_ERROR("S&F: Failed to delete message history from flash");
     }
-    
-    // Load the user request history
-    LOG_INFO("S&F: Checking for user request history file");
-    if (FSCom.exists("/history/sf_users")) {
-        File userRequestsFile = FSCom.open("/history/sf_users", FILE_O_READ);
-        if (userRequestsFile) {
-            LOG_INFO("S&F: Loading user request history");
-            
-            // Read number of entries
-            size_t entriesCount = 0;
-            userRequestsFile.read((uint8_t*)&entriesCount, sizeof(entriesCount));
-            LOG_INFO("S&F: Found request history for %u users", entriesCount);
-            
-            // Read each entry
-            for (size_t i = 0; i < entriesCount; i++) {
-                NodeNum nodeId;
-                uint32_t lastIdx;
-                
-                userRequestsFile.read((uint8_t*)&nodeId, sizeof(nodeId));
-                userRequestsFile.read((uint8_t*)&lastIdx, sizeof(lastIdx));
-                
-                // Make sure index is within valid range
-                if (lastIdx <= module->packetHistoryTotalCount) {
-                    module->lastRequest[nodeId] = lastIdx;
-                    LOG_INFO("S&F: Loaded user 0x%08x with lastRequest: %u", nodeId, lastIdx);
-                } else {
-                    module->lastRequest[nodeId] = 0; // Reset if out of range
-                    LOG_WARN("S&F: User 0x%08x had invalid lastRequest: %u (reset to 0)", nodeId, lastIdx);
-                }
-            }
-            userRequestsFile.close();
-            LOG_INFO("S&F: User request history loaded successfully");
-        } else {
-            LOG_ERROR("S&F: Could not open user requests file for reading");
-        }
-    } else {
-        LOG_INFO("S&F: No user request history file found");
-    }
-#else
-    LOG_WARN("S&F: Filesystem not implemented, can't load messages");
-#endif
-}
 
-} // namespace StoreForwardPersistence
+    // Also delete message IDs file if it exists
+    if (FSCom.exists(STORE_FORWARD_MSGIDS_FILENAME)) {
+        bool msgIdsResult = FSCom.remove(STORE_FORWARD_MSGIDS_FILENAME);
+        if (msgIdsResult) {
+            LOG_INFO("S&F: Message IDs file successfully deleted");
+        } else {
+            LOG_WARN("S&F: Failed to delete message IDs file");
+        }
+    }
+
+    return result;
+}

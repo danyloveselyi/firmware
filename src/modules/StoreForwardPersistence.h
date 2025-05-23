@@ -2,11 +2,29 @@
 
 #include "StoreForwardModule.h"
 
-// Namespace for Store & Forward persistence functions
-namespace StoreForwardPersistence {
-    // Function declarations
-    void saveToFlash(StoreForwardModule *module);
-    void loadFromFlash(StoreForwardModule *module);
-}
+/**
+ * Class for handling persistence of Store & Forward data
+ */
+class StoreForwardPersistence
+{
+  public:
+    /**
+     * Save the Store & Forward message history to flash
+     * @param module Pointer to the module whose history should be saved
+     * @return true if successful, false otherwise
+     */
+    static bool saveToFlash(StoreForwardModule *module);
 
-// This file needs to be checked to ensure there are no extern declarations for lastSaveTime and messageCounter
+    /**
+     * Load the Store & Forward message history from flash
+     * @param module Pointer to the module whose history should be loaded
+     * @return true if successful, false otherwise
+     */
+    static bool loadFromFlash(StoreForwardModule *module);
+
+    /**
+     * Remove the Store & Forward message history file
+     * @return true if successful or if file doesn't exist, false otherwise
+     */
+    static bool clearFlash();
+};
