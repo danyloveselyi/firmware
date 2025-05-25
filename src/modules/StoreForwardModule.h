@@ -13,10 +13,11 @@
 class StoreForwardModule;
 
 // Now declare the StoreForwardPersistence namespace
-namespace StoreForwardPersistence {
-    void saveToFlash(StoreForwardModule *module);
-    void loadFromFlash(StoreForwardModule *module);
-}
+namespace StoreForwardPersistence
+{
+void saveToFlash(StoreForwardModule *module);
+void loadFromFlash(StoreForwardModule *module);
+} // namespace StoreForwardPersistence
 
 struct PacketHistoryStruct {
     uint32_t time;
@@ -30,7 +31,7 @@ struct PacketHistoryStruct {
     pb_size_t payload_size;
 };
 
-class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<meshtastic_StoreAndForward>
+class StoreForwardModule : public ProtobufModule<meshtastic_StoreAndForward>, private concurrency::OSThread
 {
     bool busy = 0;
     uint32_t busyTo = 0;
@@ -54,6 +55,15 @@ class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<
     friend void StoreForwardPersistence::loadFromFlash(StoreForwardModule *module);
     // Removed the friend declaration for checkSaveInterval
 
+    // Message acknowledgment tracking
+    bool waitingForAck = false;     // Flag indicating we're waiting for an ACK
+    uint32_t lastMessageId = 0;     // ID of the last sent message for tracking
+    uint8_t messageRetryCount = 0;  // Current retry attempt count
+    uint8_t maxRetryCount = 3;      // Maximum number of retries before giving up
+    uint32_t lastSendTime = 0;      // When the last message was sent
+    uint32_t retryTimeoutMs = 5000; // Retry timeout in milliseconds (5 seconds)
+    bool ignoreRequest = false;     // Flag to ignore incoming requests while busy
+
   public:
     StoreForwardModule();
     // Adding a destructor
@@ -74,8 +84,8 @@ class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<
     /**
      * Send our payload into the mesh
      */
-    bool sendPayload(NodeNum dest = NODENUM_BROADCAST, uint32_t packetHistory_index = 0);
-    meshtastic_MeshPacket *preparePayload(NodeNum dest, uint32_t packetHistory_index, bool local = false);
+    bool sendPayload(NodeNum dest = NODENUM_BROADCAST, uint32_t packetHistory_index = 0, bool isRetry = false);
+    meshtastic_MeshPacket *preparePayload(NodeNum dest, uint32_t packetHistory_index, bool local = false, bool isRetry = false);
     void sendMessage(NodeNum dest, const meshtastic_StoreAndForward &payload);
     void sendMessage(NodeNum dest, meshtastic_StoreAndForward_RequestResponse rr);
     void sendErrorTextMessage(NodeNum dest, bool want_response);
@@ -88,6 +98,14 @@ class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<
     */
     virtual bool wantPacket(const meshtastic_MeshPacket *p) override
     {
+        if (is_server && waitingForAck) {
+            // When waiting for ACKs, also check for routing packets (ACKs)
+            if (p->to == nodeDB->getNodeNum() && p->decoded.portnum == meshtastic_PortNum_ROUTING_APP) {
+                return true;
+            }
+        }
+
+        // Check regular message types
         switch (p->decoded.portnum) {
         case meshtastic_PortNum_TEXT_MESSAGE_APP:
         case meshtastic_PortNum_STORE_FORWARD_APP:
@@ -122,6 +140,14 @@ class StoreForwardModule : private concurrency::OSThread, public ProtobufModule<
     */
     virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
     virtual bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_StoreAndForward *p);
+
+  public:
+    /**
+     * Resets the history position for a specific client.
+     *
+     * @param clientNodeNum The node number of the client to reset.
+     */
+    void resetClientHistoryPosition(NodeNum clientNodeNum);
 };
 
 extern StoreForwardModule *storeForwardModule;
