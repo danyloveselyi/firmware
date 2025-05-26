@@ -21,6 +21,14 @@
 
 StoreForwardModule *storeForwardModule;
 
+// Let's keep the file-scope static variables
+static NodeNum pendingNoMsgNotification = 0;
+static uint32_t pendingNoMsgTime = 0;
+static NodeNum pendingResetConfirmation = 0;
+static uint32_t pendingResetTime = 0;
+static NodeNum pendingResetNotification = 0;
+static uint32_t pendingResetNotifTime = 0;
+
 int32_t StoreForwardModule::runOnce()
 {
 #if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
@@ -71,8 +79,7 @@ int32_t StoreForwardModule::runOnce()
                 // We've tried enough times, give up
                 LOG_INFO("S&F - Max retries reached, giving up on message to node %s (0x%x)", clientName, this->busyTo);
                 waitingForAck = false;
-                messageRetryCount = 0;
-                this->busy = false;
+                messageRetryCount = this->busy = false;
 
                 // Reset retry timeout for next message
                 retryTimeoutMs = 5000; // Reset to default value
@@ -124,10 +131,90 @@ int32_t StoreForwardModule::runOnce()
             storeForwardModule->sendMessage(NODENUM_BROADCAST, sf);
         }
 
-        // Check for pending "no messages" notifications
-        static NodeNum pendingNoMsgNotification = 0;
-        static uint32_t pendingNoMsgTime = 0;
+        // Check for pending reset confirmations (highest priority)
+        if (pendingResetConfirmation && !busy && !waitingForAck && airTime->isTxAllowedChannelUtil(false)) {
+            // We have a pending reset confirmation and we're not busy
+            if (millis() - pendingResetTime > 500) { // Add a small delay before sending
+                LOG_INFO("S&F - Sending pending reset confirmation to node 0x%x", pendingResetConfirmation);
 
+                // Send using higher priority and request ACK for better reliability
+                meshtastic_MeshPacket *pr = allocDataPacket();
+                pr->to = pendingResetConfirmation;
+                pr->priority = meshtastic_MeshPacket_Priority_RELIABLE; // Use RELIABLE priority
+                pr->want_ack = true;                                    // Request ACK for better delivery tracking
+                pr->decoded.want_response = false;
+                pr->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+
+                // Always use channel 0 for S&F messages
+                pr->channel = 0;
+                LOG_INFO("S&F - Sending reset confirmation on channel 0 to node 0x%x", pendingResetConfirmation);
+
+                const char *str = "S&F - History reset successful. Use 'SF' to receive all messages.";
+                memcpy(pr->decoded.payload.bytes, str, strlen(str));
+                pr->decoded.payload.size = strlen(str);
+
+                // Set up for ACK tracking
+                busyTo = pendingResetConfirmation;
+                lastMessageId = pr->id;
+                waitingForAck = true;
+                messageRetryCount = 0;
+                lastSendTime = millis();
+
+                LOG_INFO("S&F - Set waitingForAck=true for reset confirmation id=0x%08x", pr->id);
+
+                service->sendToMesh(pr);
+
+                // Clear the pending reset confirmation after sending
+                pendingResetConfirmation = 0;
+
+                // Mark as busy so we don't process other messages
+                busy = true;
+
+                return (this->packetTimeMax); // Return early to prioritize this message
+            }
+        }
+
+        // Check for pending reset notifications (second priority)
+        if (pendingResetNotification && !busy && !waitingForAck && airTime->isTxAllowedChannelUtil(false)) {
+            // We have a pending reset notification and we're not busy
+            if (millis() - pendingResetNotifTime > 500) { // Add a small delay before sending
+                LOG_INFO("S&F - Sending pending 'no history' notification to node 0x%x", pendingResetNotification);
+
+                // Send using higher priority and request ACK for better reliability
+                meshtastic_MeshPacket *pr = allocDataPacket();
+                pr->to = pendingResetNotification;
+                pr->priority = meshtastic_MeshPacket_Priority_RELIABLE; // Use RELIABLE priority
+                pr->want_ack = true;                                    // Request ACK for better delivery tracking
+                pr->decoded.want_response = false;
+                pr->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+
+                // Always use channel 0 for S&F messages
+                pr->channel = 0;
+                LOG_INFO("S&F - Sending 'no history' notification on channel 0 to node 0x%x", pendingResetNotification);
+
+                const char *str = "S&F - No history found to reset. Use 'SF' to begin receiving messages.";
+                memcpy(pr->decoded.payload.bytes, str, strlen(str));
+                pr->decoded.payload.size = strlen(str);
+
+                // Set up for ACK tracking
+                busyTo = pendingResetNotification;
+                lastMessageId = pr->id;
+                waitingForAck = true;
+                messageRetryCount = 0;
+                lastSendTime = millis();
+
+                LOG_INFO("S&F - Set waitingForAck=true for 'no history' notification id=0x%08x", pr->id);
+
+                service->sendToMesh(pr);
+
+                // Clear the pending reset notification after sending
+                pendingResetNotification = 0;
+
+                return (this->packetTimeMax); // Return early to prioritize this message
+            }
+        }
+
+        // Check for pending "no messages" notifications (lowest priority)
         if (pendingNoMsgNotification && !busy && !waitingForAck && airTime->isTxAllowedChannelUtil(false)) {
             // We have a pending notification and we're not busy
             if (millis() - pendingNoMsgTime > 500) { // Add a small delay before sending
@@ -368,26 +455,8 @@ ProcessMessage StoreForwardModule::handleReceived(const meshtastic_MeshPacket &m
                                 LOG_INFO("S&F - Will send %d messages from last %d minutes to %s (0x%x)", numPackets,
                                          historyReturnWindow, clientName, clientNodeNum);
 
-                                if (numPackets > 0) {
-                                    historySend(windowSeconds, clientNodeNum);
-                                } else {
-                                    // No messages to send, inform the user
-                                    meshtastic_MeshPacket *pr = allocDataPacket();
-                                    pr->to = clientNodeNum;
-                                    pr->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-                                    pr->want_ack = false;
-                                    pr->decoded.want_response = false;
-                                    pr->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
-
-                                    // Always use channel 0
-                                    pr->channel = 0;
-                                    LOG_INFO("S&F - Sending 'no messages' notification on channel 0 to node 0x%x", clientNodeNum);
-
-                                    const char *str = "S&F - No messages available in your history window.";
-                                    memcpy(pr->decoded.payload.bytes, str, strlen(str));
-                                    pr->decoded.payload.size = strlen(str);
-                                    service->sendToMesh(pr);
-                                }
+                                // Call historySend whether we have messages or not - let it handle the notification
+                                historySend(windowSeconds, clientNodeNum);
                             }
                         } else {
                             LOG_INFO("S&F - This node is not a server, ignoring SF command");
@@ -613,7 +682,7 @@ void StoreForwardModule::sendErrorTextMessage(NodeNum dest, bool want_response)
     service->sendToMesh(pr);
 }
 
-// Modify the resetClientHistoryPosition function to enforce channel 0
+// Modify the resetClientHistoryPosition function to use the file-scope static variables
 void StoreForwardModule::resetClientHistoryPosition(NodeNum clientNodeNum)
 {
     // Get client's name from the database for better logs
@@ -630,45 +699,213 @@ void StoreForwardModule::resetClientHistoryPosition(NodeNum clientNodeNum)
         // Save the updated state to flash immediately
         StoreForwardPersistence::saveToFlash(this);
 
-        // Send confirmation message to client
-        meshtastic_MeshPacket *pr = allocDataPacket();
-        pr->to = clientNodeNum;
-        pr->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-        pr->want_ack = false;
-        pr->decoded.want_response = false;
-        pr->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+        // Queue the notification to be sent when system is idle - using file-scope variables
+        pendingResetConfirmation = clientNodeNum;
+        pendingResetTime = millis();
 
-        // Always use channel 0
-        pr->channel = 0;
-        LOG_INFO("S&F - Forcing channel 0 for reset confirmation to node 0x%x", clientNodeNum);
+        LOG_INFO("S&F - Queued reset confirmation for %s (0x%x)", clientName, clientNodeNum);
 
-        const char *str = "S&F - History reset successful. Use 'SF' to receive all messages.";
-        memcpy(pr->decoded.payload.bytes, str, strlen(str));
-        pr->decoded.payload.size = strlen(str);
-        service->sendToMesh(pr);
+        // Schedule to check very soon with higher priority
+        setIntervalFromNow(100);
     } else {
         LOG_INFO("S&F - No history position found for %s (0x%x)", clientName, clientNodeNum);
 
-        // Send message indicating no history exists yet
-        meshtastic_MeshPacket *pr = allocDataPacket();
-        pr->to = clientNodeNum;
-        pr->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-        pr->want_ack = false;
-        pr->decoded.want_response = false;
-        pr->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+        // Queue the notification to be sent when system is idle - using file-scope variables
+        pendingResetNotification = clientNodeNum;
+        pendingResetNotifTime = millis();
 
-        // Always use channel 0
-        pr->channel = 0;
-        LOG_INFO("S&F - Forcing channel 0 for reset confirmation to node 0x%x", clientNodeNum);
+        LOG_INFO("S&F - Queued 'no history' notification for %s (0x%x)", clientName, clientNodeNum);
 
-        const char *str = "S&F - No history found to reset. Use 'SF' to begin receiving messages.";
-        memcpy(pr->decoded.payload.bytes, str, strlen(str));
-        pr->decoded.payload.size = strlen(str);
-        service->sendToMesh(pr);
+        // Schedule to check very soon with higher priority
+        setIntervalFromNow(100);
     }
 }
 
-// Modify preparePayload to force channel 0 for outgoing messages
+/**
+ * Add a proper implementation of historySend
+ */
+void StoreForwardModule::historySend(uint32_t secAgo, uint32_t to)
+{
+    if (!is_server) {
+        LOG_INFO("S&F - Not a server, cannot send history");
+        return;
+    }
+
+    // Don't accept new history requests while waiting for ACKs
+    if (waitingForAck) {
+        LOG_INFO("S&F - Busy waiting for ACKs from previous message, ignoring new request");
+        meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
+        sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_BUSY;
+        sendMessage(to, sf);
+        return;
+    }
+
+    // Get client's name for better logs
+    meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(to);
+    const char *clientName = (node && node->has_user && node->user.long_name[0])    ? node->user.long_name
+                             : (node && node->has_user && node->user.short_name[0]) ? node->user.short_name
+                                                                                    : "Unknown";
+
+    // Create the destination entry if it doesn't exist
+    if (lastRequest.find(to) == lastRequest.end()) {
+        lastRequest.emplace(to, 0);
+        LOG_INFO("S&F - Created new history position for client %s (0x%x)", clientName, to);
+    }
+
+    // Calculate time threshold
+    uint32_t timeThreshold = getTime() < secAgo ? 0 : getTime() - secAgo;
+    LOG_INFO("S&F - Sending history to %s (0x%x) from time %u (threshold=%u)", clientName, to, timeThreshold, timeThreshold);
+
+    // Count how many messages we'll send
+    uint32_t queueSize = getNumAvailablePackets(to, timeThreshold);
+    LOG_INFO("S&F - Found %d messages for client %s (0x%x)", queueSize, clientName, to);
+
+    if (queueSize > 0) {
+        if (queueSize > this->historyReturnMax) {
+            queueSize = this->historyReturnMax;
+            LOG_INFO("S&F - Limiting to %d messages (historyReturnMax)", queueSize);
+        }
+
+        // Tell the client we're sending history
+        meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
+        sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_HISTORY;
+        sf.which_variant = meshtastic_StoreAndForward_history_tag;
+        sf.variant.history.history_messages = queueSize;
+        sf.variant.history.window = secAgo * 1000;
+        sf.variant.history.last_request = lastRequest[to];
+
+        meshtastic_MeshPacket *p = allocDataProtobuf(sf);
+        p->to = to;
+        p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
+        p->want_ack = false;
+        p->decoded.want_response = false;
+
+        // Always use channel 0
+        p->channel = 0;
+        LOG_INFO("S&F - Sending ROUTER_HISTORY notification on channel 0 to node 0x%x", to);
+
+        service->sendToMesh(p);
+
+        // Mark that we're busy and who we're sending to
+        this->busy = true;
+        this->busyTo = to;
+        this->last_time = timeThreshold;
+        this->requestCount = 0;
+
+        LOG_INFO("S&F - Set busy=true, busyTo=0x%x, requestCount=0", to);
+
+        // Let runOnce handle sending the actual messages
+        setIntervalFromNow(this->packetTimeMax);
+        LOG_INFO("S&F - Scheduled message sending to begin in %d ms", this->packetTimeMax);
+    } else {
+        LOG_INFO("S&F - No messages to send to %s (0x%x)", clientName, to);
+
+        // Instead of sending a message immediately, queue it for later when system is idle
+        pendingNoMsgNotification = to;
+        pendingNoMsgTime = millis();
+        LOG_INFO("S&F - Queued 'no messages' notification for node 0x%x", to);
+
+        // Schedule to check soon
+        setIntervalFromNow(100);
+    }
+}
+
+/**
+ * Add a complete implementation of historyAdd to ensure messages are stored properly
+ */
+void StoreForwardModule::historyAdd(const meshtastic_MeshPacket &mp)
+{
+    if (!is_server) {
+        LOG_INFO("S&F - Not a server, not storing message");
+        return;
+    }
+
+    LOG_INFO("S&F - Adding message to history: from=0x%x, to=0x%x, id=0x%08x", mp.from, mp.to, mp.id);
+
+    // Check if we need to wrap around
+    if (this->packetHistoryTotalCount >= this->records) {
+        LOG_INFO("S&F - History buffer full, wrapping around (total=%d, max=%d)", this->packetHistoryTotalCount, this->records);
+        this->packetHistoryTotalCount = 0;
+
+        // Reset all client positions since we're wrapping
+        for (auto &i : lastRequest) {
+            i.second = 0;
+            LOG_INFO("S&F - Reset history position for client 0x%x due to buffer wrap", i.first);
+        }
+    }
+
+    // Store message data
+    this->packetHistory[this->packetHistoryTotalCount].time = getTime();
+    this->packetHistory[this->packetHistoryTotalCount].to = mp.to;
+    this->packetHistory[this->packetHistoryTotalCount].from = getFrom(&mp);
+    this->packetHistory[this->packetHistoryTotalCount].id = mp.id;
+
+    // Store the channel explicitly
+    this->packetHistory[this->packetHistoryTotalCount].channel = mp.channel;
+
+    if (mp.which_payload_variant == meshtastic_MeshPacket_decoded_tag) {
+        const auto &p = mp.decoded;
+        this->packetHistory[this->packetHistoryTotalCount].reply_id = p.reply_id;
+        this->packetHistory[this->packetHistoryTotalCount].emoji = (bool)p.emoji;
+        this->packetHistory[this->packetHistoryTotalCount].payload_size = p.payload.size;
+        memcpy(this->packetHistory[this->packetHistoryTotalCount].payload, p.payload.bytes,
+               meshtastic_Constants_DATA_PAYLOAD_LEN);
+    } else if (mp.which_payload_variant == meshtastic_MeshPacket_encrypted_tag) {
+        // For encrypted messages, we can only store limited info
+        this->packetHistory[this->packetHistoryTotalCount].reply_id = 0;
+        this->packetHistory[this->packetHistoryTotalCount].emoji = false;
+
+        // Store encrypted payload
+        size_t size = std::min((size_t)mp.encrypted.size, (size_t)meshtastic_Constants_DATA_PAYLOAD_LEN);
+        this->packetHistory[this->packetHistoryTotalCount].payload_size = size;
+        memcpy(this->packetHistory[this->packetHistoryTotalCount].payload, mp.encrypted.bytes, size);
+    }
+
+    LOG_INFO("S&F - Stored message in history at index %d (channel=%d)", this->packetHistoryTotalCount,
+             this->packetHistory[this->packetHistoryTotalCount].channel);
+
+    this->packetHistoryTotalCount++;
+
+    // Save history to flash
+    StoreForwardPersistence::saveToFlash(this);
+
+    LOG_INFO("S&F - History now contains %d messages", this->packetHistoryTotalCount);
+}
+
+/**
+ * Add a proper implementation of getNumAvailablePackets
+ */
+uint32_t StoreForwardModule::getNumAvailablePackets(NodeNum dest, uint32_t last_time)
+{
+    uint32_t count = 0;
+
+    // Create entry if it doesn't exist
+    if (lastRequest.find(dest) == lastRequest.end()) {
+        lastRequest.emplace(dest, 0);
+    }
+
+    // When a client has been reset (lastRequest[dest] == 0), we need to scan
+    // all packets in the history, not just from the last request position
+    uint32_t startIndex = (lastRequest[dest] == 0) ? 0 : lastRequest[dest];
+
+    LOG_INFO("S&F - Counting messages for client 0x%x from index %d, last_time=%u", dest, startIndex, last_time);
+
+    for (uint32_t i = startIndex; i < this->packetHistoryTotalCount; i++) {
+        if (this->packetHistory[i].time && (this->packetHistory[i].time > last_time)) {
+            // Include all messages in broadcasts or addressed to this client
+            if (this->packetHistory[i].to == NODENUM_BROADCAST || this->packetHistory[i].to == dest) {
+                count++;
+                LOG_DEBUG("S&F - Found eligible message at index %d: from=0x%x, to=0x%x, time=%u", i, this->packetHistory[i].from,
+                          this->packetHistory[i].to, this->packetHistory[i].time);
+            }
+        }
+    }
+
+    LOG_INFO("S&F - Found %d available packets for client 0x%x (starting from index %d)", count, dest, startIndex);
+    return count;
+}
+
+// Add the missing preparePayload implementation
 meshtastic_MeshPacket *StoreForwardModule::preparePayload(NodeNum dest, uint32_t last_time, bool local, bool isRetry)
 {
     // If this is a retry, we want to send the same message at lastRequest[dest]-1
@@ -765,197 +1002,4 @@ meshtastic_MeshPacket *StoreForwardModule::preparePayload(NodeNum dest, uint32_t
 
     LOG_INFO("S&F - No more messages found for client 0x%x from index %d", dest, startIndex);
     return nullptr;
-}
-
-/**
- * Add a complete implementation of historyAdd to ensure messages are stored properly
- */
-void StoreForwardModule::historyAdd(const meshtastic_MeshPacket &mp)
-{
-    if (!is_server) {
-        LOG_INFO("S&F - Not a server, not storing message");
-        return;
-    }
-
-    LOG_INFO("S&F - Adding message to history: from=0x%x, to=0x%x, id=0x%08x", mp.from, mp.to, mp.id);
-
-    // Check if we need to wrap around
-    if (this->packetHistoryTotalCount >= this->records) {
-        LOG_INFO("S&F - History buffer full, wrapping around (total=%d, max=%d)", this->packetHistoryTotalCount, this->records);
-        this->packetHistoryTotalCount = 0;
-
-        // Reset all client positions since we're wrapping
-        for (auto &i : lastRequest) {
-            i.second = 0;
-            LOG_INFO("S&F - Reset history position for client 0x%x due to buffer wrap", i.first);
-        }
-    }
-
-    // Store message data
-    this->packetHistory[this->packetHistoryTotalCount].time = getTime();
-    this->packetHistory[this->packetHistoryTotalCount].to = mp.to;
-    this->packetHistory[this->packetHistoryTotalCount].from = getFrom(&mp);
-    this->packetHistory[this->packetHistoryTotalCount].id = mp.id;
-
-    // Store the channel explicitly
-    this->packetHistory[this->packetHistoryTotalCount].channel = mp.channel;
-
-    if (mp.which_payload_variant == meshtastic_MeshPacket_decoded_tag) {
-        const auto &p = mp.decoded;
-        this->packetHistory[this->packetHistoryTotalCount].reply_id = p.reply_id;
-        this->packetHistory[this->packetHistoryTotalCount].emoji = (bool)p.emoji;
-        this->packetHistory[this->packetHistoryTotalCount].payload_size = p.payload.size;
-        memcpy(this->packetHistory[this->packetHistoryTotalCount].payload, p.payload.bytes,
-               meshtastic_Constants_DATA_PAYLOAD_LEN);
-    } else if (mp.which_payload_variant == meshtastic_MeshPacket_encrypted_tag) {
-        // For encrypted messages, we can only store limited info
-        this->packetHistory[this->packetHistoryTotalCount].reply_id = 0;
-        this->packetHistory[this->packetHistoryTotalCount].emoji = false;
-
-        // Store encrypted payload
-        size_t size = std::min((size_t)mp.encrypted.size, (size_t)meshtastic_Constants_DATA_PAYLOAD_LEN);
-        this->packetHistory[this->packetHistoryTotalCount].payload_size = size;
-        memcpy(this->packetHistory[this->packetHistoryTotalCount].payload, mp.encrypted.bytes, size);
-    }
-
-    LOG_INFO("S&F - Stored message in history at index %d (channel=%d)", this->packetHistoryTotalCount,
-             this->packetHistory[this->packetHistoryTotalCount].channel);
-
-    this->packetHistoryTotalCount++;
-
-    // Save history to flash
-    StoreForwardPersistence::saveToFlash(this);
-
-    LOG_INFO("S&F - History now contains %d messages", this->packetHistoryTotalCount);
-}
-
-/**
- * Add a proper implementation of historySend
- */
-void StoreForwardModule::historySend(uint32_t secAgo, uint32_t to)
-{
-    if (!is_server) {
-        LOG_INFO("S&F - Not a server, cannot send history");
-        return;
-    }
-
-    // Don't accept new history requests while waiting for ACKs
-    if (waitingForAck) {
-        LOG_INFO("S&F - Busy waiting for ACKs from previous message, ignoring new request");
-        meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
-        sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_BUSY;
-        sendMessage(to, sf);
-        return;
-    }
-
-    // Get client's name for better logs
-    meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(to);
-    const char *clientName = (node && node->has_user && node->user.long_name[0])    ? node->user.long_name
-                             : (node && node->has_user && node->user.short_name[0]) ? node->user.short_name
-                                                                                    : "Unknown";
-
-    // Create the destination entry if it doesn't exist
-    if (lastRequest.find(to) == lastRequest.end()) {
-        lastRequest.emplace(to, 0);
-        LOG_INFO("S&F - Created new history position for client %s (0x%x)", clientName, to);
-    }
-
-    // Calculate time threshold
-    uint32_t timeThreshold = getTime() < secAgo ? 0 : getTime() - secAgo;
-    LOG_INFO("S&F - Sending history to %s (0x%x) from time %u (threshold=%u)", clientName, to, timeThreshold, timeThreshold);
-
-    // Count how many messages we'll send
-    uint32_t queueSize = getNumAvailablePackets(to, timeThreshold);
-    LOG_INFO("S&F - Found %d messages for client %s (0x%x)", queueSize, clientName, to);
-
-    if (queueSize > 0) {
-        if (queueSize > this->historyReturnMax) {
-            queueSize = this->historyReturnMax;
-            LOG_INFO("S&F - Limiting to %d messages (historyReturnMax)", queueSize);
-        }
-
-        // Tell the client we're sending history
-        meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
-        sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_HISTORY;
-        sf.which_variant = meshtastic_StoreAndForward_history_tag;
-        sf.variant.history.history_messages = queueSize;
-        sf.variant.history.window = secAgo * 1000;
-        sf.variant.history.last_request = lastRequest[to];
-
-        meshtastic_MeshPacket *p = allocDataProtobuf(sf);
-        p->to = to;
-        p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-        p->want_ack = false;
-        p->decoded.want_response = false;
-
-        // Always use channel 0
-        p->channel = 0;
-        LOG_INFO("S&F - Sending ROUTER_HISTORY notification on channel 0 to node 0x%x", to);
-
-        service->sendToMesh(p);
-
-        // Mark that we're busy and who we're sending to
-        this->busy = true;
-        this->busyTo = to;
-        this->last_time = timeThreshold;
-        this->requestCount = 0;
-
-        LOG_INFO("S&F - Set busy=true, busyTo=0x%x, requestCount=0", to);
-
-        // Let runOnce handle sending the actual messages
-        setIntervalFromNow(this->packetTimeMax);
-        LOG_INFO("S&F - Scheduled message sending to begin in %d ms", this->packetTimeMax);
-    } else {
-        LOG_INFO("S&F - No messages to send to %s (0x%x)", clientName, to);
-
-        // Send a notification that there are no messages
-        meshtastic_MeshPacket *pr = allocDataPacket();
-        pr->to = to;
-        pr->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-        pr->want_ack = false;
-        pr->decoded.want_response = false;
-        pr->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
-
-        // Always use channel 0
-        pr->channel = 0;
-        LOG_INFO("S&F - Sending 'no messages' notification on channel 0 to node 0x%x", to);
-
-        const char *str = "S&F - No messages available in your history window.";
-        memcpy(pr->decoded.payload.bytes, str, strlen(str));
-        pr->decoded.payload.size = strlen(str);
-        service->sendToMesh(pr);
-    }
-}
-
-/**
- * Add a proper implementation of getNumAvailablePackets
- */
-uint32_t StoreForwardModule::getNumAvailablePackets(NodeNum dest, uint32_t last_time)
-{
-    uint32_t count = 0;
-
-    // Create entry if it doesn't exist
-    if (lastRequest.find(dest) == lastRequest.end()) {
-        lastRequest.emplace(dest, 0);
-    }
-
-    // When a client has been reset (lastRequest[dest] == 0), we need to scan
-    // all packets in the history, not just from the last request position
-    uint32_t startIndex = (lastRequest[dest] == 0) ? 0 : lastRequest[dest];
-
-    LOG_INFO("S&F - Counting messages for client 0x%x from index %d, last_time=%u", dest, startIndex, last_time);
-
-    for (uint32_t i = startIndex; i < this->packetHistoryTotalCount; i++) {
-        if (this->packetHistory[i].time && (this->packetHistory[i].time > last_time)) {
-            // Include all messages in broadcasts or addressed to this client
-            if (this->packetHistory[i].to == NODENUM_BROADCAST || this->packetHistory[i].to == dest) {
-                count++;
-                LOG_DEBUG("S&F - Found eligible message at index %d: from=0x%x, to=0x%x, time=%u", i, this->packetHistory[i].from,
-                          this->packetHistory[i].to, this->packetHistory[i].time);
-            }
-        }
-    }
-
-    LOG_INFO("S&F - Found %d available packets for client 0x%x (starting from index %d)", count, dest, startIndex);
-    return count;
 }
