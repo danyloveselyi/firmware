@@ -1,11 +1,8 @@
 #pragma once
 
-// First, include the base classes we'll be inheriting from
+#include "NodeDB.h"
 #include "ProtobufModule.h"
 #include "concurrency/OSThread.h"
-
-// Then include any other necessary headers
-#include "NodeDB.h"
 #include "configuration.h"
 #include "mesh/Channels.h"
 #include "mesh/generated/meshtastic/storeforward.pb.h"
@@ -13,7 +10,6 @@
 #include <functional>
 #include <unordered_map>
 
-// Forward declarations
 class StoreForwardModule;
 
 namespace StoreForwardPersistence
@@ -37,64 +33,60 @@ struct PacketHistoryStruct {
 class StoreForwardModule : public concurrency::OSThread, public ProtobufModule<meshtastic_StoreAndForward>
 {
   private:
-    bool busy = 0;
+    bool busy = false;
     uint32_t busyTo = 0;
     char routerMessage[meshtastic_Constants_DATA_PAYLOAD_LEN] = {0};
 
-    PacketHistoryStruct *packetHistory = 0;
+    PacketHistoryStruct *packetHistory = nullptr;
     uint32_t packetHistoryTotalCount = 0;
     uint32_t last_time = 0;
     uint32_t requestCount = 0;
 
-    uint32_t packetTimeMax = 5000; // Interval between sending history packets as a server.
+    uint32_t packetTimeMax = 5000;
 
     bool is_client = false;
     bool is_server = false;
 
-    // Unordered_map stores the last request for each nodeNum (`to` field)
     std::unordered_map<NodeNum, uint32_t> lastRequest;
-
-    // Map to store the channel each client uses - key is NodeNum, value is channel
     std::unordered_map<NodeNum, uint8_t> clientChannels;
 
-    // Adding Friendships to Access Private Class Members
     friend void StoreForwardPersistence::saveToFlash(StoreForwardModule *module);
     friend void StoreForwardPersistence::loadFromFlash(StoreForwardModule *module);
 
-    // Message acknowledgment tracking
-    bool waitingForAck = false;     // Flag indicating we're waiting for an ACK
-    uint32_t lastMessageId = 0;     // ID of the last sent message for tracking
-    uint8_t messageRetryCount = 0;  // Current retry attempt count
-    uint8_t maxRetryCount = 3;      // Maximum number of retries before giving up
-    uint32_t lastSendTime = 0;      // When the last message was sent
-    uint32_t retryTimeoutMs = 5000; // Retry timeout in milliseconds (5 seconds)
-    bool ignoreRequest = false;     // Flag to ignore incoming requests while busy
+    bool waitingForAck = false;
+    uint32_t lastMessageId = 0;
+    uint8_t messageRetryCount = 0;
+    uint8_t maxRetryCount = 3;
+    uint32_t lastSendTime = 0;
+    uint32_t retryTimeoutMs = 5000;
+    bool ignoreRequest = false;
 
-    void populatePSRAM();
+    uint32_t historyReturnMax = 25;
+    uint32_t historyReturnWindow = 240;
+    uint32_t records = 0;
+    bool heartbeat = false;
 
-    // S&F Defaults
-    uint32_t historyReturnMax = 25;     // Return maximum of 25 records by default.
-    uint32_t historyReturnWindow = 240; // Return history of last 4 hours by default.
-    uint32_t records = 0;               // Calculated
-    bool heartbeat = false;             // No heartbeat.
+    uint32_t requests = 0;
+    uint32_t requests_history = 0;
+    uint32_t retry_delay = 0;
 
-    // stats
-    uint32_t requests = 0;         // Number of times any client sent a request to the S&F.
-    uint32_t requests_history = 0; // Number of times the history was requested.
-
-    uint32_t retry_delay = 0; // If server is busy, retry after this delay (in ms).
-
-    // Find the best channel to use for communicating with a specific node
     uint8_t findBestChannelForNode(NodeNum nodeNum);
+    void populatePSRAM();
+    void configureModuleSettings();
+
+    void logStatusPeriodically();
+    void handleRetries();
+    void tryTransmitMessageQueue();
+    void sendHeartbeatIfNeeded();
+    void trySendPendingResetConfirmation();
+    void trySendPendingResetNotification();
+    void trySendPendingNoMessages();
+    void sendTextNotification(NodeNum target, const char *message);
+    const char *getClientName(meshtastic_NodeInfoLite *node);
+    void checkPendingNotifications();
 
   protected:
-    // Override from OSThread
     int32_t runOnce() override;
-
-    /** Called to handle a particular incoming message
-    @return ProcessMessage::STOP if you've guaranteed you've handled this message and no other handlers should be considered for
-    it
-    */
     virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
     virtual bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_StoreAndForward *p) override;
 
@@ -111,7 +103,7 @@ class StoreForwardModule : public concurrency::OSThread, public ProtobufModule<m
     uint32_t getNumAvailablePackets(NodeNum dest, uint32_t last_time);
 
     bool sendPayload(NodeNum dest = NODENUM_BROADCAST, uint32_t packetHistory_index = 0, bool isRetry = false);
-    meshtastic_MeshPacket *preparePayload(NodeNum dest, uint32_t packetHistory_index, bool local = false, bool isRetry = false);
+    meshtastic_MeshPacket *preparePayload(NodeNum dest, uint32_t last_time, bool local = false, bool isRetry = false);
     void sendMessage(NodeNum dest, const meshtastic_StoreAndForward &payload);
     void sendMessage(NodeNum dest, meshtastic_StoreAndForward_RequestResponse rr);
     void sendErrorTextMessage(NodeNum dest, bool want_response);
@@ -119,17 +111,13 @@ class StoreForwardModule : public concurrency::OSThread, public ProtobufModule<m
 
     bool isServer() { return is_server; }
 
-    // Override to handle packets from both TEXT_MESSAGE_APP and STORE_FORWARD_APP ports
     virtual bool wantPacket(const meshtastic_MeshPacket *p) override
     {
         if (is_server && waitingForAck) {
-            // When waiting for ACKs, also check for routing packets (ACKs)
             if (p->to == nodeDB->getNodeNum() && p->decoded.portnum == meshtastic_PortNum_ROUTING_APP) {
                 return true;
             }
         }
-
-        // Check regular message types
         switch (p->decoded.portnum) {
         case meshtastic_PortNum_TEXT_MESSAGE_APP:
         case meshtastic_PortNum_STORE_FORWARD_APP:
