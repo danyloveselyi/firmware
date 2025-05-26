@@ -123,6 +123,48 @@ int32_t StoreForwardModule::runOnce()
             sf.variant.heartbeat.secondary = 0; // TODO we always have one primary router for now
             storeForwardModule->sendMessage(NODENUM_BROADCAST, sf);
         }
+
+        // Check for pending "no messages" notifications
+        static NodeNum pendingNoMsgNotification = 0;
+        static uint32_t pendingNoMsgTime = 0;
+
+        if (pendingNoMsgNotification && !busy && !waitingForAck && airTime->isTxAllowedChannelUtil(false)) {
+            // We have a pending notification and we're not busy
+            if (millis() - pendingNoMsgTime > 500) { // Add a small delay before sending
+                LOG_INFO("S&F - Sending pending 'no messages' notification to node 0x%x", pendingNoMsgNotification);
+
+                // Send using higher priority and request ACK for better reliability
+                meshtastic_MeshPacket *pr = allocDataPacket();
+                pr->to = pendingNoMsgNotification;
+                pr->priority = meshtastic_MeshPacket_Priority_RELIABLE; // Use RELIABLE priority
+                pr->want_ack = true;                                    // Request ACK for better delivery tracking
+                pr->decoded.want_response = false;
+                pr->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+
+                // Always use channel 0 for S&F messages
+                pr->channel = 0;
+                LOG_INFO("S&F - Sending improved 'no messages' notification on channel 0 to node 0x%x", pendingNoMsgNotification);
+
+                const char *str = "S&F - No messages available in your history window.";
+                memcpy(pr->decoded.payload.bytes, str, strlen(str));
+                pr->decoded.payload.size = strlen(str);
+
+                // Set up for ACK tracking
+                busyTo = pendingNoMsgNotification;
+                lastMessageId = pr->id;
+                waitingForAck = true;
+                messageRetryCount = 0;
+                lastSendTime = millis();
+
+                LOG_INFO("S&F - Set waitingForAck=true for 'no messages' notification id=0x%08x", pr->id);
+
+                service->sendToMesh(pr);
+
+                // Clear the pending notification after sending
+                pendingNoMsgNotification = 0;
+            }
+        }
+
         return (this->packetTimeMax);
     } else if (moduleConfig.store_forward.enabled) {
         // If we're a client, log status periodically
