@@ -99,6 +99,18 @@ int32_t StoreForwardModule::runOnce()
             } else {
                 LOG_WARN("S&F - Transmission blocked: channelUtil=%.2f%%, requestCount=%d/%d",
                          airTime->channelUtilizationPercent(), this->requestCount, this->historyReturnMax);
+
+                LOG_INFO("S&F - Transmission state details: busy=%d, waitingForAck=%d, lastMessageId=0x%08x, lastSendTime=%lu, "
+                         "now=%lu",
+                         this->busy, this->waitingForAck, this->lastMessageId, this->lastSendTime, millis());
+
+                LOG_INFO("S&F - Retry count: %d, Retry timeout: %d ms", this->messageRetryCount, this->retryTimeoutMs);
+
+                if (!waitingForAck && this->requestCount >= this->historyReturnMax) {
+                    LOG_WARN("S&F - Max requests reached without waitingForAck. Forcing reset.");
+                    this->requestCount = 0;
+                    this->busy = false;
+                }
             }
         } else if (this->heartbeat && (!Throttle::isWithinTimespanMs(lastHeartbeat, heartbeatInterval * 1000)) &&
                    airTime->isTxAllowedChannelUtil(false)) {
@@ -456,7 +468,7 @@ StoreForwardModule::StoreForwardModule()
                     }
 
                     // Initialize retry parameters (use default values since the config doesn't have these fields yet)
-                    this->maxRetryCount = 3;
+                    this->maxRetryCount = 7;
                     this->retryTimeoutMs = 5000;
                     LOG_INFO("S&F - Retry parameters: max=%d, timeout=%dms", this->maxRetryCount, this->retryTimeoutMs);
 
