@@ -341,6 +341,8 @@ DecodeState perhapsDecode(meshtastic_MeshPacket *p)
         return DecodeState::DECODE_FAILURE;
     }
 
+    LOG_INFO("Routing packet from=0x%08x to=0x%08x, broadcast=%s", p->from, p->to, (p->to == 0xffffffff) ? "yes" : "no");
+
     if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag)
         return DecodeState::DECODE_SUCCESS; // If packet was already decoded just return
 
