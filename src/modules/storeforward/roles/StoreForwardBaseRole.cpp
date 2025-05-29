@@ -1,4 +1,4 @@
-#include "StoreForwardBaseRole.h"
+#include "StoreForwardBaseRole.h" // Fix: use local path instead of relative path
 #include <cstring>
 
 StoreForwardBaseRole::StoreForwardBaseRole(IStoreForwardHistoryManager &historyManager, IStoreForwardMessenger &messenger,

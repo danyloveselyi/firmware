@@ -30,7 +30,7 @@ class IStoreForwardProcessor
 
     // Statistics and management
     virtual uint32_t getTotalMessageCount() const = 0;
-    virtual uint32_t getMaxRecords() const = 0; // Add missing method
+    virtual uint32_t getMaxRecords() const = 0;
     virtual const std::vector<meshtastic_MeshPacket> &getAllStoredMessages() const = 0;
     virtual void clearStorage() = 0;
     virtual std::string getStatisticsJson() const = 0;

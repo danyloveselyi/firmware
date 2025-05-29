@@ -1,24 +1,21 @@
 #pragma once
 
-#include "StoreForwardBaseRole.h"
-#include "utils/StoreForwardLogger.h"
+#include "../interfaces/IStoreForwardMessenger.h"
+#include "../interfaces/IStoreForwardRole.h" // Fix: use path relative to interfaces directory
 
 /**
  * StoreForwardClient implements the client-side functionality of the
  * Store & Forward module. It handles discovering S&F servers on the network,
  * requesting stored messages, and processing received S&F messages.
  */
-class StoreForwardClient : public StoreForwardBaseRole
+class StoreForwardClient : public IStoreForwardRole
 {
   public:
     /**
      * Constructor - initializes a new Store & Forward client
-     * @param historyManager The history manager to use
-     * @param messenger The messenger to use
-     * @param logger The logger to use
+     * @param messenger The messenger to use for communication
      */
-    StoreForwardClient(IStoreForwardHistoryManager &historyManager, IStoreForwardMessenger &messenger,
-                       StoreForwardLogger &logger);
+    StoreForwardClient(IStoreForwardMessenger &messenger);
 
     /**
      * Periodic processing - checks server availability and handles retries
@@ -26,14 +23,10 @@ class StoreForwardClient : public StoreForwardBaseRole
     void onRunOnce() override;
 
     /**
-     * Process protocol messages specific to client functionality
+     * Process received packets related to Store & Forward functionality
+     * @param packet The received mesh packet
      */
-    void processProtocolMessage(const meshtastic_MeshPacket &packet, const meshtastic_StoreAndForward &data) override;
-
-    /**
-     * Process text commands for client
-     */
-    void processTextCommand(const meshtastic_MeshPacket &packet) override;
+    void onReceivePacket(const meshtastic_MeshPacket &packet) override;
 
     /**
      * Requests message history from a specified server
@@ -55,12 +48,6 @@ class StoreForwardClient : public StoreForwardBaseRole
     void sendPing(NodeNum serverNode);
 
     /**
-     * Checks if the client should store a packet
-     * Note: Clients typically don't store packets themselves
-     */
-    bool shouldStorePacket(const meshtastic_MeshPacket &packet) const override;
-
-    /**
      * Gets the configured heartbeat interval
      * @return Heartbeat interval in seconds
      */
@@ -79,6 +66,8 @@ class StoreForwardClient : public StoreForwardBaseRole
     unsigned long getLastHeartbeat() const { return lastHeartbeat; }
 
   private:
+    IStoreForwardMessenger &messenger;
+
     // Server tracking
     NodeNum primaryServer = 0;
     bool serverAvailable = false;
@@ -91,4 +80,7 @@ class StoreForwardClient : public StoreForwardBaseRole
 
     // Configuration values
     const unsigned long REQUEST_INTERVAL = 300000; // 5 minutes
+
+    // Process S&F specific messages
+    void processStoreForwardMessage(const meshtastic_MeshPacket &packet, const meshtastic_StoreAndForward &data);
 };

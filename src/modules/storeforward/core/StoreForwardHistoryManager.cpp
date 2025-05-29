@@ -1,18 +1,16 @@
-#include "StoreForwardProcessor.h"
+#include "StoreForwardHistoryManager.h"
+#include "../storage/StoreForwardPersistence.h"
 #include "NodeDB.h"
 #include "RTC.h"
-#include "StoreForwardPersistence.h"
 #include "configuration.h"
 #include <algorithm>
 
-// Update constructor to match header declaration
-StoreForwardProcessor::StoreForwardProcessor(IStorageBackend &storageBackend, ITimeProvider &timeProvider, ILogger &logger)
-    : storageBackend(storageBackend), timeProvider(timeProvider), logger(logger)
+StoreForwardHistoryManager::StoreForwardHistoryManager(ILogger &logger) : logger(logger)
 {
     loadFromFlash();
 }
 
-bool StoreForwardProcessor::shouldStore(const meshtastic_MeshPacket &packet) const
+bool StoreForwardHistoryManager::shouldStore(const meshtastic_MeshPacket &packet) const
 {
     // Store text messages and store & forward app messages
     switch (packet.decoded.portnum) {
@@ -24,19 +22,19 @@ bool StoreForwardProcessor::shouldStore(const meshtastic_MeshPacket &packet) con
     }
 }
 
-bool StoreForwardProcessor::isDuplicate(const meshtastic_MeshPacket &packet) const
+bool StoreForwardHistoryManager::isDuplicate(const meshtastic_MeshPacket &packet) const
 {
     return seenMessages.find(getPacketId(packet)) != seenMessages.end();
 }
 
-void StoreForwardProcessor::record(const meshtastic_MeshPacket &packet)
+void StoreForwardHistoryManager::record(const meshtastic_MeshPacket &packet)
 {
     // Add to seen messages to prevent duplicates
     seenMessages.insert(getPacketId(packet));
 
     // Store a copy of the packet
     meshtastic_MeshPacket packetCopy = packet;
-    packetCopy.rx_time = timeProvider.getUnixTime(); // Use timeProvider instead of direct getTime() call
+    packetCopy.rx_time = getTime(); // Use current time
     storedMessages.push_back(packetCopy);
 
     // Limit storage to maxRecords
@@ -52,12 +50,12 @@ void StoreForwardProcessor::record(const meshtastic_MeshPacket &packet)
     }
 }
 
-uint32_t StoreForwardProcessor::getPacketId(const meshtastic_MeshPacket &packet) const
+uint32_t StoreForwardHistoryManager::getPacketId(const meshtastic_MeshPacket &packet) const
 {
     return packet.id;
 }
 
-std::vector<meshtastic_MeshPacket> StoreForwardProcessor::getMessagesForNode(NodeNum dest, uint32_t sinceTime) const
+std::vector<meshtastic_MeshPacket> StoreForwardHistoryManager::getMessagesForNode(NodeNum dest, uint32_t sinceTime) const
 {
     std::vector<meshtastic_MeshPacket> result;
 
@@ -79,7 +77,7 @@ std::vector<meshtastic_MeshPacket> StoreForwardProcessor::getMessagesForNode(Nod
     return result;
 }
 
-uint32_t StoreForwardProcessor::getNumAvailablePackets(NodeNum dest, uint32_t lastTime) const
+uint32_t StoreForwardHistoryManager::getNumAvailablePackets(NodeNum dest, uint32_t lastTime) const
 {
     uint32_t count = 0;
     uint32_t startIdx = getLastRequestIndex(dest);
@@ -94,7 +92,7 @@ uint32_t StoreForwardProcessor::getNumAvailablePackets(NodeNum dest, uint32_t la
     return count;
 }
 
-void StoreForwardProcessor::updateLastRequest(NodeNum dest, uint32_t index)
+void StoreForwardHistoryManager::updateLastRequest(NodeNum dest, uint32_t index)
 {
     // Ensure index is valid
     if (index <= storedMessages.size()) {
@@ -102,51 +100,63 @@ void StoreForwardProcessor::updateLastRequest(NodeNum dest, uint32_t index)
     }
 }
 
-uint32_t StoreForwardProcessor::getLastRequestIndex(NodeNum dest) const
+uint32_t StoreForwardHistoryManager::getLastRequestIndex(NodeNum dest) const
 {
     auto it = lastRequest.find(dest);
     return (it != lastRequest.end()) ? it->second : 0;
 }
 
-uint32_t StoreForwardProcessor::getTotalMessageCount() const
+uint32_t StoreForwardHistoryManager::getTotalMessageCount() const
 {
     return storedMessages.size();
 }
 
-uint32_t StoreForwardProcessor::getMaxRecords() const
+uint32_t StoreForwardHistoryManager::getMaxRecords() const
 {
     return maxRecords;
 }
 
-void StoreForwardProcessor::saveToFlash()
+void StoreForwardHistoryManager::setMaxRecords(uint32_t newMaxRecords)
 {
-    // Use the persistence helper to save to flash
-    StoreForwardPersistence::saveToFlash(this);
+    maxRecords = newMaxRecords;
+
+    // If we're over the new limit, trim messages
+    if (storedMessages.size() > maxRecords) {
+        size_t numToRemove = storedMessages.size() - maxRecords;
+        storedMessages.erase(storedMessages.begin(), storedMessages.begin() + numToRemove);
+        logger.info("S&F: Removed %u old messages after reducing max records", (unsigned)numToRemove);
+    }
 }
 
-void StoreForwardProcessor::loadFromFlash()
-{
-    // Use the persistence helper to load from flash
-    StoreForwardPersistence::loadFromFlash(this);
-}
-
-void StoreForwardProcessor::clearStorage()
-{
-    storedMessages.clear();
-    seenMessages.clear();
-    lastRequest.clear();
-    LOG_INFO("S&F: Storage cleared, all messages and tracking data removed");
-}
-
-const std::vector<meshtastic_MeshPacket> &StoreForwardProcessor::getAllStoredMessages() const
-{
-    return storedMessages;
-}
-
-std::string StoreForwardProcessor::getStatisticsJson() const
+std::string StoreForwardHistoryManager::getStatisticsJson() const
 {
     char json[256];
     snprintf(json, sizeof(json), "{\"messages\":%u,\"max\":%u,\"clients\":%u,\"duplicates\":%u}", (unsigned)storedMessages.size(),
              maxRecords, (unsigned)lastRequest.size(), (unsigned)seenMessages.size());
     return std::string(json);
+}
+
+void StoreForwardHistoryManager::saveToFlash()
+{
+    // Call the concrete implementation directly
+    StoreForwardPersistence::saveToFlash(this);
+}
+
+void StoreForwardHistoryManager::loadFromFlash()
+{
+    // Call the concrete implementation directly
+    StoreForwardPersistence::loadFromFlash(this);
+}
+
+void StoreForwardHistoryManager::clearStorage()
+{
+    storedMessages.clear();
+    seenMessages.clear();
+    lastRequest.clear();
+    logger.info("S&F: Storage cleared, all messages and tracking data removed");
+}
+
+const std::vector<meshtastic_MeshPacket> &StoreForwardHistoryManager::getAllStoredMessages() const
+{
+    return storedMessages;
 }

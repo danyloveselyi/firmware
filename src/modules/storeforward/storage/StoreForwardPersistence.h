@@ -1,8 +1,9 @@
 #pragma once
 
 #include "mesh/generated/meshtastic/mesh.pb.h" // Include the mesh packet definition
+#include <cstdint>
 
-// Forward declaration of classes
+// Forward declarations
 class StoreForwardModule;
 class StoreForwardProcessor;
 class StoreForwardHistoryManager;
@@ -39,21 +40,21 @@ void loadFromFlash(StoreForwardProcessor *processor);
 
 /**
  * Save the message history to persistent storage
- * @param manager Pointer to the history manager containing messages to save
+ * @param manager Pointer to the concrete history manager containing messages to save
  */
 void saveToFlash(StoreForwardHistoryManager *manager);
+
+/**
+ * Load the message history from persistent storage
+ * @param manager Pointer to the concrete history manager where messages will be loaded
+ */
+void loadFromFlash(StoreForwardHistoryManager *manager);
 
 /**
  * Save the message history to persistent storage using the interface
  * @param manager Pointer to the history manager interface containing messages to save
  */
 void saveToFlash(IStoreForwardHistoryManager *manager);
-
-/**
- * Load the message history from persistent storage
- * @param manager Pointer to the history manager where messages will be loaded
- */
-void loadFromFlash(StoreForwardHistoryManager *manager);
 
 /**
  * Load the message history from persistent storage using the interface

@@ -1,11 +1,11 @@
 #pragma once
 
+#include "../interfaces/ILogger.h"
+#include "../interfaces/IStorageBackend.h"
+#include "../interfaces/IStoreForwardProcessor.h"
+#include "../interfaces/ITimeProvider.h"
 #include "NodeDB.h"
 #include "RTC.h" // Include for getTime()
-#include "interfaces/ILogger.h"
-#include "interfaces/IStorageBackend.h"
-#include "interfaces/IStoreForwardProcessor.h"
-#include "interfaces/ITimeProvider.h"
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -65,7 +65,7 @@ class StoreForwardProcessor : public IStoreForwardProcessor
     // Internal helper methods
     uint32_t getPacketId(const meshtastic_MeshPacket &packet) const;
 
-    // Grant access to StoreForwardPersistence functions
+    // Grant access to persistence functions
     friend void StoreForwardPersistence::saveToFlash(StoreForwardProcessor *processor);
     friend void StoreForwardPersistence::loadFromFlash(StoreForwardProcessor *processor);
 };

@@ -1,7 +1,9 @@
-#include "StoreForwardRoleFactory.h"
-#include "StoreForwardClient.h"
-#include "StoreForwardServer.h"
+#include "StoreForwardRoleFactory.h"     // Update to local path (same directory)
+#include "../utils/StoreForwardLogger.h" // Path relative to current directory
+#include "StoreForwardClient.h"          // Include from same directory
+#include "StoreForwardServer.h"          // Include from same directory
 #include "configuration.h"
+#include <memory>
 
 #ifdef ARCH_ESP32
 #include "memory/MemoryPool.h"

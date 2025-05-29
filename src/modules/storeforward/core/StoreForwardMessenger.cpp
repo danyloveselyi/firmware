@@ -1,23 +1,22 @@
 #include "StoreForwardMessenger.h"
-#include "MeshService.h"
+#include "NodeDB.h"
 #include "Router.h"
 #include "configuration.h"
+#include "mesh/generated/meshtastic/storeforward.pb.h"
 #include <cstring>
 
 StoreForwardMessenger::StoreForwardMessenger(Router &router, MeshService &service, ILogger &logger)
     : router(router), service(service), logger(logger)
 {
-    // No initialization needed
 }
 
 meshtastic_MeshPacket *StoreForwardMessenger::allocatePacket(NodeNum to, meshtastic_PortNum portNum, bool wantAck)
 {
     meshtastic_MeshPacket *p = router.allocForSending();
     p->to = to;
-    p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-    p->want_ack = wantAck;
     p->decoded.portnum = portNum;
-    p->channel = 0; // Always use primary channel for S&F messages
+    p->want_ack = wantAck;
+    p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
     return p;
 }
 
