@@ -1,14 +1,14 @@
 #pragma once
 
 // Include our interfaces
-#include "../interfaces/ILogger.h"
-#include "../interfaces/IStoreForwardHistoryManager.h"
-#include "../interfaces/IStoreForwardMessenger.h"
-#include "../interfaces/IStoreForwardRole.h"
-#include "../roles/StoreForwardRoleFactory.h" // Fixed path to point to roles directory
 #include "ProtobufModule.h"
 #include "concurrency/OSThread.h"
+#include "interfaces/ILogger.h"
+#include "interfaces/IStoreForwardHistoryManager.h"
+#include "interfaces/IStoreForwardMessenger.h"
+#include "interfaces/IStoreForwardRole.h"
 #include "mesh/generated/meshtastic/storeforward.pb.h"
+#include "roles/StoreForwardRoleFactory.h"
 #include <memory>
 
 // Forward declaration

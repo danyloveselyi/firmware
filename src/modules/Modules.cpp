@@ -88,7 +88,7 @@
 
 // Include the Store & Forward module from the new location
 #if !MESHTASTIC_EXCLUDE_STOREFORWARD
-#include "modules/storeforward/StoreForwardModule.h"
+#include "modules/storeforward/StoreForwardModule.h" // Updated path after moving from core
 #endif
 
 /**

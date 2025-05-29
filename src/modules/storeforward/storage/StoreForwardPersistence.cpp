@@ -1,6 +1,6 @@
 #include "StoreForwardPersistence.h"
+#include "../StoreForwardModule.h" // Updated path after file was moved
 #include "../core/StoreForwardHistoryManager.h"
-#include "../core/StoreForwardModule.h"
 #include "../core/StoreForwardProcessor.h"
 #include "FSCommon.h"
 #include "NodeDB.h"

@@ -1,12 +1,12 @@
 #include "StoreForwardModule.h"
-#include "../roles/StoreForwardClient.h" // Fixed path
-#include "../roles/StoreForwardServer.h" // Fixed path
-#include "../utils/DefaultLogger.h"
 #include "NodeDB.h"
-#include "StoreForwardHistoryManager.h"
-#include "StoreForwardMessenger.h"
 #include "configuration.h"
+#include "core/StoreForwardHistoryManager.h" // Changed from local path to core directory path
+#include "core/StoreForwardMessenger.h"      // Changed from local path to core directory path
 #include "mesh/generated/meshtastic/storeforward.pb.h"
+#include "roles/StoreForwardClient.h"
+#include "roles/StoreForwardServer.h"
+#include "utils/DefaultLogger.h"
 
 // External references to global service and router pointers
 extern Router *router;
