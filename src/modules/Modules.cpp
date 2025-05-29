@@ -49,9 +49,6 @@
 #endif
 #if ARCH_PORTDUINO
 #include "input/LinuxInputImpl.h"
-#if !MESHTASTIC_EXCLUDE_STOREFORWARD
-#include "modules/StoreForwardModule.h"
-#endif
 #endif
 #if HAS_TELEMETRY
 #include "modules/Telemetry/DeviceTelemetry.h"
@@ -72,9 +69,6 @@
 #if !MESHTASTIC_EXCLUDE_PAXCOUNTER
 #include "modules/esp32/PaxcounterModule.h"
 #endif
-#if !MESHTASTIC_EXCLUDE_STOREFORWARD
-#include "modules/StoreForwardModule.h"
-#endif
 #endif
 #if defined(ARCH_ESP32) || defined(ARCH_NRF52) || defined(ARCH_RP2040) || defined(ARCH_PORTDUINO)
 #if !MESHTASTIC_EXCLUDE_EXTERNALNOTIFICATION
@@ -90,6 +84,11 @@
 
 #if !MESHTASTIC_EXCLUDE_DROPZONE
 #include "modules/DropzoneModule.h"
+#endif
+
+// Include the Store & Forward module from the new location
+#if !MESHTASTIC_EXCLUDE_STOREFORWARD
+#include "modules/storeforward/StoreForwardModule.h"
 #endif
 
 /**
@@ -224,7 +223,7 @@ void setupModules()
 #endif
 #if defined(ARCH_ESP32) || defined(ARCH_PORTDUINO)
 #if !MESHTASTIC_EXCLUDE_STOREFORWARD
-        storeForwardModule = new StoreForwardModule();
+        storeForwardModule = StoreForwardModule::createWithDefaultDependencies();
 #endif
 #endif
 #if defined(ARCH_ESP32) || defined(ARCH_NRF52) || defined(ARCH_RP2040) || defined(ARCH_PORTDUINO)
