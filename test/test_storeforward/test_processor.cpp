@@ -1,4 +1,4 @@
-#include "modules/storeforward/StoreForwardProcessor.h"
+#include "modules/storeforward/core/StoreForwardProcessor.h"
 #include "unity.h"
 
 void test_should_store_valid_message(void)
