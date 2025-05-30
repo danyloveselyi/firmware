@@ -1,51 +1,63 @@
-#include "StoreForwardRoleFactory.h"     // Update to local path (same directory)
-#include "../utils/StoreForwardLogger.h" // Path relative to current directory
-#include "StoreForwardClient.h"          // Include from same directory
-#include "StoreForwardServer.h"          // Include from same directory
+#include "StoreForwardRoleFactory.h"
+#include "StoreForwardClient.h"
+#include "StoreForwardServer.h"
 #include "configuration.h"
 #include <memory>
-
-#ifdef ARCH_ESP32
-#include "memory/MemoryPool.h"
-extern MemoryDynamic *memGet; // from main.cpp
-#endif
 
 StoreForwardRoleFactory::StoreForwardRoleFactory(ILogger &logger) : logger(logger) {}
 
 std::unique_ptr<IStoreForwardRole> StoreForwardRoleFactory::createRole(IStoreForwardMessenger &messenger,
                                                                        IStoreForwardHistoryManager &historyManager,
-                                                                       bool isServerConfigured, bool hasEnoughMemory)
+                                                                       StoreForwardRoleType requestedType, bool hasEnoughMemory)
 {
-    const bool enabled = moduleConfig.store_forward.enabled;
+    bool memoryAvailable = checkMemoryRequirements();
 
-    if (!enabled) {
-        logger.info("S&F: Module is disabled");
+    // First check if the module is disabled
+    if (requestedType == StoreForwardRoleType::INACTIVE) {
+        logger.info("S&F: Role set to INACTIVE");
         return nullptr;
     }
 
-    // Check if we have sufficient memory for server mode
-    bool memoryAvailable = checkMemoryRequirements();
-    hasEnoughMemory &= memoryAvailable;
-
-    if (isServerConfigured && hasEnoughMemory) {
-        logger.info("S&F: Creating SERVER role");
-        return std::make_unique<StoreForwardServer>(historyManager, messenger);
-    } else {
-        logger.info("S&F: Creating CLIENT role%s",
-                    (isServerConfigured && !hasEnoughMemory) ? " (insufficient memory for server)" : "");
-        return std::make_unique<StoreForwardClient>(messenger);
+    // Check if we have enough memory to run as a server
+    if (requestedType == StoreForwardRoleType::SERVER && (!hasEnoughMemory || !memoryAvailable)) {
+        logger.warn("S&F: Insufficient memory for server role, falling back to client");
+        requestedType = StoreForwardRoleType::CLIENT;
     }
+
+    // Create the appropriate role based on the type
+    switch (requestedType) {
+    case StoreForwardRoleType::SERVER:
+        logger.info("S&F: Creating SERVER role");
+        return std::unique_ptr<IStoreForwardRole>(new StoreForwardServer(historyManager, messenger));
+
+    case StoreForwardRoleType::CLIENT:
+        logger.info("S&F: Creating CLIENT role");
+        return std::unique_ptr<IStoreForwardRole>(new StoreForwardClient(messenger));
+
+    case StoreForwardRoleType::RELAY:
+        logger.info("S&F: RELAY role not yet implemented, falling back to CLIENT");
+        return std::unique_ptr<IStoreForwardRole>(new StoreForwardClient(messenger));
+
+    default:
+        logger.error("S&F: Unknown role type, falling back to CLIENT");
+        return std::unique_ptr<IStoreForwardRole>(new StoreForwardClient(messenger));
+    }
+}
+
+StoreForwardRoleType StoreForwardRoleFactory::configToRoleType(bool isServer, bool isEnabled)
+{
+    if (!isEnabled)
+        return StoreForwardRoleType::INACTIVE;
+
+    if (isServer)
+        return StoreForwardRoleType::SERVER;
+
+    return StoreForwardRoleType::CLIENT;
 }
 
 bool StoreForwardRoleFactory::checkMemoryRequirements() const
 {
-#ifdef ARCH_ESP32
-    if (memGet && memGet->getPsramSize() > 0) {
-        return memGet->getFreePsram() >= 1024 * 1024; // At least 1MB free
-    } else {
-        return false; // No PSRAM
-    }
-#else
-    return true; // On other platforms, assume we have enough memory
-#endif
+    // Check for available memory to run as a server
+    // This is a simplified version for now
+    return true;
 }

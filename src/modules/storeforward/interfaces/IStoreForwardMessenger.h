@@ -2,17 +2,13 @@
 
 #include "NodeDB.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
-#include "mesh/generated/meshtastic/storeforward.pb.h"
 
 /**
- * Interface for Store & Forward messaging operations
- * This abstracts the communication between nodes for S&F functionality
+ * Interface for sending Store & Forward messages
  */
 class IStoreForwardMessenger
 {
   public:
-    virtual ~IStoreForwardMessenger() = default;
-
     /**
      * Send a text notification to a node
      * @param to Destination node ID
@@ -75,4 +71,22 @@ class IStoreForwardMessenger
      * @return A newly allocated mesh packet ready to send
      */
     virtual meshtastic_MeshPacket *prepareHistoryPayload(const meshtastic_MeshPacket &msg, NodeNum dest) = 0;
+
+    /**
+     * Send a packet to the next hop
+     * @param p The packet to send
+     * @return True if the packet was sent
+     */
+    virtual bool sendToNextHop(const meshtastic_MeshPacket &p) = 0;
+
+    /**
+     * Check if this messenger has a router available
+     * @return True if a router is available
+     */
+    virtual bool hasRouter() const = 0;
+
+    /**
+     * Virtual destructor
+     */
+    virtual ~IStoreForwardMessenger() = default;
 };

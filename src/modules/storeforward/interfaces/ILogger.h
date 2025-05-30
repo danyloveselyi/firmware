@@ -1,21 +1,32 @@
 #pragma once
 
-#include <string>
+#include <cstdint>
 
 /**
- * Simple logger interface to abstract away the actual logging implementation.
- * This improves testability by removing direct dependencies on platform-specific logging.
+ * Logger interface for Store & Forward module
  */
 class ILogger
 {
   public:
-    enum class Level { DEBUG, INFO, WARN, ERROR };
+    // Define log levels enum
+    enum LogLevel {
+        ERROR = 0, // Highest priority
+        WARN = 1,
+        INFO = 2,
+        DEBUG = 3 // Lowest priority
+    };
 
-    virtual ~ILogger() = default;
-
-    virtual void log(Level level, const char *format, ...) = 0;
+    // Virtual methods for logging
+    virtual void log(LogLevel level, const char *format, ...) = 0;
     virtual void debug(const char *format, ...) = 0;
     virtual void info(const char *format, ...) = 0;
     virtual void warn(const char *format, ...) = 0;
     virtual void error(const char *format, ...) = 0;
+
+    // Level management
+    virtual void setLevel(LogLevel level) = 0;
+    virtual LogLevel getLevel() const = 0;
+
+    // Virtual destructor
+    virtual ~ILogger() = default;
 };

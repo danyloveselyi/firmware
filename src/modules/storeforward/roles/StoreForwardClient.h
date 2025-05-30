@@ -1,7 +1,8 @@
 #pragma once
 
 #include "../interfaces/IStoreForwardMessenger.h"
-#include "../interfaces/IStoreForwardRole.h" // Fix: use path relative to interfaces directory
+#include "../interfaces/IStoreForwardRole.h"
+#include "mesh/generated/meshtastic/storeforward.pb.h" // Add missing include
 
 /**
  * StoreForwardClient implements the client-side functionality of the

@@ -3,10 +3,12 @@
 #include "mesh/generated/meshtastic/mesh.pb.h" // Include the mesh packet definition
 #include <cstdint>
 
-// Forward declarations
+// Include the header file that defines PacketHistoryStruct to avoid redefinition
+#include "../core/StoreForwardHistoryManager.h"
+
+// Forward declare classes we'll work with
 class StoreForwardModule;
 class StoreForwardProcessor;
-class StoreForwardHistoryManager;
 class IStoreForwardHistoryManager;
 
 /**

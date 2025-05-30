@@ -1,6 +1,5 @@
 #pragma once
 
-#include "StoreForwardLogger.h"
 #include "configuration.h"
 
 namespace StoreForwardConfigUtils
@@ -62,14 +61,32 @@ inline bool isHeartbeatEnabled()
 }
 
 /**
- * Get the configured log level for Store & Forward module
+ * Get the maximum number of retries for message sending
+ */
+inline uint8_t getMaxRetries()
+{
+    // These fields don't exist in the current protobuf definition, use defaults
+    return 3; // Default to 3 retries
+}
+
+/**
+ * Get the retry timeout in milliseconds
+ */
+inline uint32_t getRetryTimeout()
+{
+    // These fields don't exist in the current protobuf definition, use defaults
+    return 5000; // Default to 5 seconds (5000 ms)
+}
+
+/**
+ * Get the log level based on configuration
  * @return The log level
  */
-inline StoreForwardLogger::LogLevel getLogLevel()
+inline uint8_t getLogLevel()
 {
     // In the future, this could be configured via a setting
     // For now, default to INFO level
-    return StoreForwardLogger::LogLevel::INFO;
+    return 3; // Default to INFO level
 }
 
 } // namespace StoreForwardConfigUtils

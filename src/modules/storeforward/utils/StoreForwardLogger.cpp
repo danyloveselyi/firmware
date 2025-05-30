@@ -1,123 +1,95 @@
-#include "StoreForwardLogger.h" // Fix include path to use local file
+#include "StoreForwardLogger.h"
+#include "DebugConfiguration.h"
+#include <cstdarg>
 #include <cstdio>
 
-StoreForwardLogger::StoreForwardLogger(ILogger &baseLogger, const char *context, LogLevel level)
-    : baseLogger(baseLogger), context(context), logLevel(level)
+namespace meshtastic
 {
+
+// Create the global instance - initialize with INFO level by default
+static StoreForwardLogger instance(ILogger::LogLevel::INFO);
+StoreForwardLogger &sfLogger = instance;
+
+StoreForwardLogger::StoreForwardLogger(LogLevel defaultLevel) : level(defaultLevel) {}
+
+void StoreForwardLogger::setLevel(LogLevel newLevel)
+{
+    level = newLevel;
 }
 
-bool StoreForwardLogger::shouldLog(LogLevel level) const
+ILogger::LogLevel StoreForwardLogger::getLevel() const
 {
-    return level >= logLevel;
-}
-
-void StoreForwardLogger::setLogLevel(LogLevel level)
-{
-    logLevel = level;
-}
-
-StoreForwardLogger::LogLevel StoreForwardLogger::getLogLevel() const
-{
-    return logLevel;
-}
-
-void StoreForwardLogger::log(Level level, const char *format, ...)
-{
-    if (!shouldLog(convertLevel(level)))
-        return;
-
-    va_list args;
-    va_start(args, format);
-    logWithContext(level, format, args);
-    va_end(args);
+    return level;
 }
 
 void StoreForwardLogger::debug(const char *format, ...)
 {
-    if (!shouldLog(LogLevel::DEBUG))
+    if (level < LogLevel::DEBUG)
         return;
 
     va_list args;
     va_start(args, format);
-    logWithContext(Level::DEBUG, format, args);
+    DEBUG_PORT.log("DEBUG", (contextPrefix + format).c_str(), args);
     va_end(args);
 }
 
 void StoreForwardLogger::info(const char *format, ...)
 {
-    if (!shouldLog(LogLevel::INFO))
+    if (level < LogLevel::INFO)
         return;
 
     va_list args;
     va_start(args, format);
-    logWithContext(Level::INFO, format, args);
+    DEBUG_PORT.log("INFO", (contextPrefix + format).c_str(), args);
     va_end(args);
 }
 
 void StoreForwardLogger::warn(const char *format, ...)
 {
-    if (!shouldLog(LogLevel::WARN))
+    if (level < LogLevel::WARN)
         return;
 
     va_list args;
     va_start(args, format);
-    logWithContext(Level::WARN, format, args);
+    DEBUG_PORT.log("WARN", (contextPrefix + format).c_str(), args);
     va_end(args);
 }
 
 void StoreForwardLogger::error(const char *format, ...)
 {
-    if (!shouldLog(LogLevel::ERROR))
+    if (level < LogLevel::ERROR)
         return;
 
     va_list args;
     va_start(args, format);
-    logWithContext(Level::ERROR, format, args);
+    DEBUG_PORT.log("ERROR", (contextPrefix + format).c_str(), args);
     va_end(args);
 }
 
-void StoreForwardLogger::logWithContext(Level level, const char *format, va_list args)
+void StoreForwardLogger::log(LogLevel msgLevel, const char *format, ...)
 {
-    // Create a buffer for the formatted message with context
-    char contextBuffer[256];
-    snprintf(contextBuffer, sizeof(contextBuffer), "[%s] %s", context, format);
-
-    // Pass the context-prefixed message to the base logger
-    baseLogger.log(level, contextBuffer, args);
-}
-
-ILogger::Level StoreForwardLogger::convertLevel(LogLevel level) const
-{
-    switch (level) {
-    case LogLevel::TRACE:
-        return Level::DEBUG; // We don't have TRACE in ILogger
-    case LogLevel::DEBUG:
-        return Level::DEBUG;
-    case LogLevel::INFO:
-        return Level::INFO;
-    case LogLevel::WARN:
-        return Level::WARN;
-    case LogLevel::ERROR:
-        return Level::ERROR;
-    case LogLevel::NONE:
-        return Level::ERROR; // Never log if NONE
-    default:
-        return Level::INFO;
+    // Only log if the message level is less than or equal to the current level
+    // (ERROR=0, DEBUG=3, so lower value = higher priority)
+    if (static_cast<int>(msgLevel) > static_cast<int>(level)) {
+        return;
     }
+
+    va_list args;
+    va_start(args, format);
+
+    // Convert our LogLevel enum to a string for DEBUG_PORT.log
+    const char *levelStr = (msgLevel == LogLevel::ERROR)  ? "ERROR"
+                           : (msgLevel == LogLevel::WARN) ? "WARN"
+                           : (msgLevel == LogLevel::INFO) ? "INFO"
+                                                          : "DEBUG";
+
+    // Add our context prefix to the format string
+    std::string prefixedFormat = contextPrefix + format;
+
+    // Use the global debug port from DebugConfiguration.h
+    DEBUG_PORT.log(levelStr, prefixedFormat.c_str(), args);
+
+    va_end(args);
 }
 
-StoreForwardLogger::LogLevel StoreForwardLogger::convertLevel(Level level) const
-{
-    switch (level) {
-    case Level::DEBUG:
-        return LogLevel::DEBUG;
-    case Level::INFO:
-        return LogLevel::INFO;
-    case Level::WARN:
-        return LogLevel::WARN;
-    case Level::ERROR:
-        return LogLevel::ERROR;
-    default:
-        return LogLevel::INFO;
-    }
-}
+} // namespace meshtastic

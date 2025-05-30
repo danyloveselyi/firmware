@@ -1,18 +1,18 @@
 #include "StoreForwardMessenger.h"
+#include "MeshService.h"
 #include "NodeDB.h"
 #include "Router.h"
-#include "configuration.h"
 #include "mesh/generated/meshtastic/storeforward.pb.h"
 #include <cstring>
 
-StoreForwardMessenger::StoreForwardMessenger(Router &router, MeshService &service, ILogger &logger)
-    : router(router), service(service), logger(logger)
+StoreForwardMessenger::StoreForwardMessenger(MeshService &service, ILogger &logger, Router *router)
+    : service(service), logger(logger), router(router)
 {
 }
 
 meshtastic_MeshPacket *StoreForwardMessenger::allocatePacket(NodeNum to, meshtastic_PortNum portNum, bool wantAck)
 {
-    meshtastic_MeshPacket *p = router.allocForSending();
+    meshtastic_MeshPacket *p = router->allocForSending();
     p->to = to;
     p->decoded.portnum = portNum;
     p->want_ack = wantAck;
@@ -83,22 +83,31 @@ void StoreForwardMessenger::sendStats(NodeNum to, uint32_t messageTotal, uint32_
     logger.info("S&F: Sent stats to 0x%x", to);
 }
 
-void StoreForwardMessenger::sendHistoryResponse(NodeNum to, uint32_t messageCount, uint32_t windowTime, uint32_t lastRequestIndex)
+void StoreForwardMessenger::sendHistoryResponse(NodeNum dest, uint32_t historyMessages, uint32_t window, uint32_t lastIndex)
 {
-    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
-    sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_HISTORY;
-    sf.which_variant = meshtastic_StoreAndForward_history_tag;
-    sf.variant.history.history_messages = messageCount;
-    sf.variant.history.window = windowTime * 1000; // Convert to ms for the protocol
-    sf.variant.history.last_request = lastRequestIndex;
+    logger.info("S&F: Creating history response for node 0x%x: messages=%u, window=%u, lastIndex=%u", dest, historyMessages,
+                window, lastIndex);
 
-    // Prepare and send the response
-    meshtastic_MeshPacket *p = allocatePacket(to, meshtastic_PortNum_STORE_FORWARD_APP);
+    meshtastic_MeshPacket *p = router->allocForSending();
+    p->to = dest;
+    p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
+    p->want_ack = false;
+    p->decoded.portnum = meshtastic_PortNum_STORE_FORWARD_APP;
+
+    meshtastic_StoreAndForward msg = meshtastic_StoreAndForward_init_zero;
+    msg.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_HISTORY;
+    msg.which_variant = meshtastic_StoreAndForward_history_tag;
+    msg.variant.history.history_messages = historyMessages;
+    msg.variant.history.window = window;
+
     p->decoded.payload.size =
-        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &sf);
-    service.sendToMesh(p);
+        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &msg);
 
-    logger.info("S&F: Sent history response to 0x%x: %d messages available", to, messageCount);
+    logger.info("S&F: Sending history response packet with size %u", p->decoded.payload.size);
+
+    // Fix: service.sendToMesh returns void, can't be used in if statement
+    service.sendToMesh(p);
+    logger.info("S&F: Sent history response to 0x%x: %u messages", dest, historyMessages);
 }
 
 meshtastic_MeshPacket *StoreForwardMessenger::prepareHistoryPayload(const meshtastic_MeshPacket &historyMessage, NodeNum dest)
@@ -206,4 +215,16 @@ void StoreForwardMessenger::sendPing(NodeNum serverNode)
     service.sendToMesh(p);
 
     logger.info("S&F: Sent ping to server 0x%x", serverNode);
+}
+
+bool StoreForwardMessenger::sendToNextHop(const meshtastic_MeshPacket &p)
+{
+    // Check if router is available
+    if (router) {
+        // Router doesn't have sendToNextHop method, use send instead
+        return router->send(const_cast<meshtastic_MeshPacket *>(&p)) == ERRNO_OK;
+    } else {
+        logger.warn("S&F: Router not available, cannot forward via next hop");
+        return false;
+    }
 }

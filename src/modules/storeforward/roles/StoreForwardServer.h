@@ -2,7 +2,7 @@
 
 #include "../interfaces/IStoreForwardHistoryManager.h"
 #include "../interfaces/IStoreForwardMessenger.h"
-#include "../interfaces/IStoreForwardRole.h" // Fix: use path relative to interfaces directory
+#include "../interfaces/IStoreForwardRole.h"
 
 class StoreForwardModule; // Forward declaration
 

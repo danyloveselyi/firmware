@@ -1,13 +1,14 @@
 #pragma once
 
+#include "../interfaces/ILogger.h"
 #include "../interfaces/IStoreForwardHistoryManager.h"
 #include "../interfaces/IStoreForwardMessenger.h"
 #include "../interfaces/IStoreForwardRole.h"
-#include "../utils/StoreForwardLogger.h"
+#include "mesh/generated/meshtastic/storeforward.pb.h"
 
 /**
- * Base class that implements common functionality for Store & Forward roles.
- * Both client and server roles inherit from this class.
+ * Base class for Store & Forward roles that implements common functionality
+ * shared between client and server roles.
  */
 class StoreForwardBaseRole : public IStoreForwardRole
 {
@@ -18,32 +19,23 @@ class StoreForwardBaseRole : public IStoreForwardRole
      * @param messenger The messenger to use
      * @param logger The logger to use
      */
-    StoreForwardBaseRole(IStoreForwardHistoryManager &historyManager, IStoreForwardMessenger &messenger,
-                         StoreForwardLogger &logger);
+    StoreForwardBaseRole(IStoreForwardHistoryManager &historyManager, IStoreForwardMessenger &messenger, ILogger &logger);
 
-    // Common functionality that can be shared between client/server
+    // IStoreForwardRole interface implementation
     virtual void onRunOnce() override;
     virtual void onReceivePacket(const meshtastic_MeshPacket &packet) override;
 
   protected:
     IStoreForwardHistoryManager &historyManager;
     IStoreForwardMessenger &messenger;
-    StoreForwardLogger &logger;
+    ILogger &logger;
 
-    // Last time status was logged
+    // Common state tracking
     unsigned long lastStatusLog = 0;
-    static constexpr unsigned long STATUS_LOG_INTERVAL = 60000; // 1 minute
+    const unsigned long STATUS_LOG_INTERVAL = 60000; // 1 minute
 
-    // Common methods that can be used by derived classes
-    virtual bool shouldProcessPacket(const meshtastic_MeshPacket &packet) const;
-    virtual bool shouldStorePacket(const meshtastic_MeshPacket &packet) const;
-
-    // Process a text message that might contain a command
+    // Common methods shared by derived classes
     virtual void processTextCommand(const meshtastic_MeshPacket &packet);
-
-    // Process a Store & Forward protocol message
     virtual void processProtocolMessage(const meshtastic_MeshPacket &packet, const meshtastic_StoreAndForward &data);
-
-    // Default implementation returns false - derived classes must override if needed
     virtual bool isBusy() const { return false; }
 };

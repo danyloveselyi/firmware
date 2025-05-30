@@ -1,62 +1,78 @@
 #pragma once
 
 #include "../interfaces/ILogger.h"
-#include <cstdarg>
 #include <string>
 
+namespace meshtastic
+{
+
 /**
- * Enhanced logger for Store & Forward
- * Adds context information to log messages and supports configurable log levels
+ * StoreForwardLogger - A specialized logger for the Store & Forward module
+ * that includes module-specific context in log messages.
  */
 class StoreForwardLogger : public ILogger
 {
   public:
-    enum class LogLevel { TRACE, DEBUG, INFO, WARN, ERROR, NONE };
-
     /**
      * Constructor
-     * @param baseLogger The underlying logger to use
-     * @param context The context string to prepend to all messages (e.g., "S&F-Server")
-     * @param level The minimum log level to output
+     * @param defaultLevel The initial log level
      */
-    StoreForwardLogger(ILogger &baseLogger, const char *context, LogLevel level = LogLevel::INFO);
+    StoreForwardLogger(LogLevel defaultLevel = LogLevel::INFO);
 
-    void log(Level level, const char *format, ...) override;
+    /**
+     * Set the current logging level
+     * @param level The new logging level
+     */
+    void setLevel(LogLevel level) override;
+
+    /**
+     * Get the current logging level
+     * @return The current logging level
+     */
+    LogLevel getLevel() const override;
+
+    /**
+     * Log a message with the specified level
+     * @param level The log level
+     * @param format The format string
+     * @param ... The arguments to format
+     */
+    void log(LogLevel level, const char *format, ...) override;
+
+    /**
+     * Log a debug message
+     * @param format The format string
+     * @param ... The arguments to format
+     */
     void debug(const char *format, ...) override;
+
+    /**
+     * Log an info message
+     * @param format The format string
+     * @param ... The arguments to format
+     */
     void info(const char *format, ...) override;
+
+    /**
+     * Log a warning message
+     * @param format The format string
+     * @param ... The arguments to format
+     */
     void warn(const char *format, ...) override;
+
+    /**
+     * Log an error message
+     * @param format The format string
+     * @param ... The arguments to format
+     */
     void error(const char *format, ...) override;
 
-    /**
-     * Check if a log message at the specified level should be logged
-     * @param level The log level to check
-     * @return true if the log should be emitted
-     */
-    bool shouldLog(LogLevel level) const;
-
-    /**
-     * Set the current log level
-     * @param level The new log level
-     */
-    void setLogLevel(LogLevel level);
-
-    /**
-     * Get the current log level
-     * @return The current log level
-     */
-    LogLevel getLogLevel() const;
-
   private:
-    ILogger &baseLogger;
-    const char *context;
-    LogLevel logLevel;
-
-    // Helper method to prepend context
-    void logWithContext(Level level, const char *format, va_list args);
-
-    // Convert internal LogLevel to ILogger Level
-    Level convertLevel(LogLevel level) const;
-
-    // Convert ILogger Level to internal LogLevel
-    LogLevel convertLevel(Level level) const;
+    LogLevel level;
+    std::string contextPrefix = "S&F: ";
 };
+
+// Global instance for the module to use
+extern StoreForwardLogger &sfLogger;
+
+} // namespace meshtastic

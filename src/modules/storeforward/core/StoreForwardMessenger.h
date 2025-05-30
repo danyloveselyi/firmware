@@ -4,22 +4,18 @@
 #include "../interfaces/IStoreForwardMessenger.h"
 #include "MeshService.h"
 #include "Router.h"
-#include "mesh/generated/meshtastic/storeforward.pb.h"
+#include "mesh/generated/meshtastic/storeforward.pb.h" // Add missing include
 
-/**
- * Implementation of IStoreForwardMessenger that uses the Router and MeshService
- * to send messages over the mesh network.
- */
 class StoreForwardMessenger : public IStoreForwardMessenger
 {
   public:
     /**
      * Constructor
-     * @param router The router to use for sending packets
      * @param service The mesh service to use
      * @param logger The logger to use
+     * @param router The router to use for sending packets (optional)
      */
-    StoreForwardMessenger(Router &router, MeshService &service, ILogger &logger);
+    StoreForwardMessenger(MeshService &service, ILogger &logger, Router *router = nullptr);
 
     // IStoreForwardMessenger interface implementation
     void sendTextNotification(NodeNum to, const char *text) override;
@@ -32,8 +28,14 @@ class StoreForwardMessenger : public IStoreForwardMessenger
     void sendPing(NodeNum serverNode) override;
     meshtastic_MeshPacket *prepareHistoryPayload(const meshtastic_MeshPacket &msg, NodeNum dest) override;
 
+    // Send to next hop
+    bool sendToNextHop(const meshtastic_MeshPacket &p) override;
+
+    // Check if Router is available
+    bool hasRouter() const override { return router != nullptr; }
+
   private:
-    Router &router;
+    Router *router; // Can be nullptr
     MeshService &service;
     ILogger &logger;
 
@@ -45,4 +47,7 @@ class StoreForwardMessenger : public IStoreForwardMessenger
      * @return A newly allocated mesh packet
      */
     meshtastic_MeshPacket *allocatePacket(NodeNum to, meshtastic_PortNum portNum, bool wantAck = false);
+
+    // Helper methods
+    bool sendProtobuf(meshtastic_StoreAndForward &packet, NodeNum destNum, meshtastic_StoreAndForward_RequestResponse rr);
 };
