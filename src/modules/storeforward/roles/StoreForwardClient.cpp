@@ -7,9 +7,15 @@
 #include "mesh/generated/meshtastic/storeforward.pb.h"
 
 // Updated constructor to use interface type
-StoreForwardClient::StoreForwardClient(IStoreForwardMessenger &messenger) : messenger(messenger)
+StoreForwardClient::StoreForwardClient(IStoreForwardMessenger &messenger, IStoreForwardHistoryManager &historyManager,
+                                       ILogger &logger)
+    : messenger(messenger), historyManager(historyManager), logger(logger)
 {
     LOG_INFO("S&F: Initializing Client mode");
+
+    // Initialize variables
+    lastServerScan = 0;
+    lastHistoryRequest = 0;
 }
 
 void StoreForwardClient::onRunOnce()

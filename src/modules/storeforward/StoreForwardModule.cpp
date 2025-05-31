@@ -1,8 +1,8 @@
 #include "StoreForwardModule.h"
 #include "NodeDB.h"
 #include "configuration.h"
-#include "core/StoreForwardHistoryManager.h" // Changed from local path to core directory path
-#include "core/StoreForwardMessenger.h"      // Changed from local path to core directory path
+#include "core/StoreForwardHistoryManager.h"
+#include "core/StoreForwardMessenger.h"
 #include "mesh/generated/meshtastic/storeforward.pb.h"
 #include "roles/StoreForwardClient.h"
 #include "roles/StoreForwardServer.h"
@@ -32,7 +32,8 @@ StoreForwardModule::StoreForwardModule()
       OSThread("StoreForwardModule"), logger(defaultLogger)
 {
     // Create a messenger that uses the global router and service
-    messenger = std::make_unique<StoreForwardMessenger>(*router, *service, logger);
+    // Note: Order of parameters is MeshService, ILogger, Router*
+    messenger = std::make_unique<StoreForwardMessenger>(*service, logger, router);
 
     // Create a history manager that uses our logger
     historyManager = std::make_unique<StoreForwardHistoryManager>(logger);
@@ -76,7 +77,9 @@ bool StoreForwardModule::initializeRole()
 #endif
 
     // Use the factory to create the appropriate role
-    role = roleFactory->createRole(*messenger, *historyManager, configIsServer, hasEnoughMemory);
+    // Convert boolean configIsServer to StoreForwardRoleType enum
+    StoreForwardRoleType roleType = configIsServer ? StoreForwardRoleType::SERVER : StoreForwardRoleType::CLIENT;
+    role = roleFactory->createRole(*messenger, *historyManager, roleType, hasEnoughMemory);
 
     if (role) {
         isServer = configIsServer && hasEnoughMemory;
@@ -175,8 +178,9 @@ StoreForwardModule *StoreForwardModule::createWithDefaultDependencies()
     // Create a logger
     auto logger = &defaultLogger;
 
-    // Create a messenger that uses the global router and service directly
-    auto messenger = std::make_unique<StoreForwardMessenger>(*router, *service, *logger);
+    // Create a messenger that uses the global router and service
+    // Note: Order of parameters is MeshService, ILogger, Router*
+    auto messenger = std::make_unique<StoreForwardMessenger>(*service, *logger, router);
 
     // Create a history manager that uses our logger
     auto historyManager = std::make_unique<StoreForwardHistoryManager>(*logger);

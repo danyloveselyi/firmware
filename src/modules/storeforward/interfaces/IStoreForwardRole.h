@@ -1,7 +1,6 @@
 #pragma once
 
-#include "NodeDB.h" // Include for NodeNum type
-#include "mesh/generated/meshtastic/mesh.pb.h"
+#include "MeshTypes.h"
 
 /**
  * Interface for Store & Forward role implementations (client or server)
@@ -13,10 +12,9 @@ class IStoreForwardRole
 {
   public:
     /**
-     * Perform periodic operations for this role
-     * Called regularly by the main module's runOnce method
+     * Destructor
      */
-    virtual void onRunOnce() = 0;
+    virtual ~IStoreForwardRole() = default;
 
     /**
      * Process a received packet for this role
@@ -25,7 +23,8 @@ class IStoreForwardRole
     virtual void onReceivePacket(const meshtastic_MeshPacket &packet) = 0;
 
     /**
-     * Destructor
+     * Perform periodic operations for this role
+     * Called regularly by the main module's runOnce method
      */
-    virtual ~IStoreForwardRole() = default;
+    virtual void onRunOnce() = 0;
 };

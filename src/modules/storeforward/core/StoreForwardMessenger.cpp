@@ -1,230 +1,241 @@
 #include "StoreForwardMessenger.h"
-#include "MeshService.h"
-#include "NodeDB.h"
-#include "Router.h"
+#include "MemoryPool.h" // Include for packetPool
 #include "mesh/generated/meshtastic/storeforward.pb.h"
-#include <cstring>
 
 StoreForwardMessenger::StoreForwardMessenger(MeshService &service, ILogger &logger, Router *router)
     : service(service), logger(logger), router(router)
 {
 }
 
+// Helper method to allocate packets with common settings
 meshtastic_MeshPacket *StoreForwardMessenger::allocatePacket(NodeNum to, meshtastic_PortNum portNum, bool wantAck)
 {
-    meshtastic_MeshPacket *p = router->allocForSending();
+    meshtastic_MeshPacket *p = packetPool.allocZeroed();
     p->to = to;
     p->decoded.portnum = portNum;
     p->want_ack = wantAck;
-    p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
+
     return p;
+}
+
+meshtastic_MeshPacket *StoreForwardMessenger::allocReply()
+{
+    return router->allocForSending();
+}
+
+bool StoreForwardMessenger::sendReply(meshtastic_MeshPacket *packet)
+{
+    service.sendToMesh(packet);
+    return true;
 }
 
 void StoreForwardMessenger::sendTextNotification(NodeNum dest, const char *message)
 {
-    if (!message || !*message)
-        return;
-
-    // Allocate a packet for sending
     meshtastic_MeshPacket *p = allocatePacket(dest, meshtastic_PortNum_TEXT_MESSAGE_APP);
 
-    // Set message content
-    size_t messageLen = strlen(message);
-    memcpy(p->decoded.payload.bytes, message, messageLen);
-    p->decoded.payload.size = messageLen;
+    // Copy text into the packet
+    size_t len = strlen(message);
+    if (len > sizeof(p->decoded.payload.bytes))
+        len = sizeof(p->decoded.payload.bytes);
 
-    // Send the packet
+    memcpy(p->decoded.payload.bytes, message, len);
+    p->decoded.payload.size = len;
+
     service.sendToMesh(p);
-    logger.info("S&F: Sent notification to 0x%x: %s", dest, message);
 }
 
 void StoreForwardMessenger::sendHeartbeat(uint32_t heartbeatInterval)
 {
-    // Allocate a packet for the heartbeat
     meshtastic_MeshPacket *p = allocatePacket(NODENUM_BROADCAST, meshtastic_PortNum_STORE_FORWARD_APP);
 
-    // Build the store and forward message
-    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
-    sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_HEARTBEAT;
-    sf.which_variant = meshtastic_StoreAndForward_heartbeat_tag;
-    sf.variant.heartbeat.period = heartbeatInterval;
-    sf.variant.heartbeat.secondary = 0; // We always have one primary router for now
+    // Create and populate heartbeat
+    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_default;
+    sf.rr = meshtastic_StoreAndForward_RequestResponse_UNSET;    // Use UNSET instead of RESPONSE
+    sf.which_payload = meshtastic_StoreAndForward_heartbeat_tag; // Use payload instead of variant
+    sf.payload.heartbeat.period = heartbeatInterval;
 
-    // Pack the protobuf
-    p->decoded.payload.size =
-        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &sf);
-
-    // Send the packet
-    service.sendToMesh(p);
-    logger.info("S&F: Sent heartbeat with interval %d seconds", heartbeatInterval);
+    // Encode to the packet
+    pb_ostream_t stream = pb_ostream_from_buffer(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
+    if (pb_encode(&stream, meshtastic_StoreAndForward_fields, &sf)) {
+        p->decoded.payload.size = stream.bytes_written;
+        service.sendToMesh(p);
+    } else {
+        logger.error("Heartbeat too large for packet");
+        packetPool.release(p); // Use global packetPool
+    }
 }
 
 void StoreForwardMessenger::sendStats(NodeNum to, uint32_t messageTotal, uint32_t messagesSaved, uint32_t messagesMax,
-                                      uint32_t upTime, bool heartbeatEnabled, uint32_t returnMax, uint32_t returnWindow)
+                                      uint32_t uptime, bool hasStore, uint32_t requestsHandled, uint32_t window)
 {
-    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
-
-    sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_STATS;
-    sf.which_variant = meshtastic_StoreAndForward_stats_tag;
-    sf.variant.stats.messages_total = messageTotal;
-    sf.variant.stats.messages_saved = messagesSaved;
-    sf.variant.stats.messages_max = messagesMax;
-    sf.variant.stats.up_time = upTime;
-    sf.variant.stats.heartbeat = heartbeatEnabled;
-    sf.variant.stats.return_max = returnMax;
-    sf.variant.stats.return_window = returnWindow;
-
-    // Prepare and send the message
     meshtastic_MeshPacket *p = allocatePacket(to, meshtastic_PortNum_STORE_FORWARD_APP);
-    p->decoded.payload.size =
-        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &sf);
-    service.sendToMesh(p);
 
-    logger.info("S&F: Sent stats to 0x%x", to);
+    // Create and populate stats
+    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_default;
+    sf.rr = meshtastic_StoreAndForward_RequestResponse_UNSET; // Use UNSET instead of RESPONSE
+    sf.which_payload = meshtastic_StoreAndForward_stats_tag;  // Use payload instead of variant
+
+    // Update field names to match the actual protobuf definition
+    sf.payload.stats.time_window = window;
+    sf.payload.stats.message_count = messagesSaved;
+    sf.payload.stats.max_messages = messagesMax;
+    sf.payload.stats.message_overwritten = messageTotal - messagesSaved;
+    sf.payload.stats.up_time = uptime;
+    sf.payload.stats.storage_enabled = hasStore;
+    sf.payload.stats.request_count = requestsHandled;
+
+    // Encode to the packet
+    pb_ostream_t stream = pb_ostream_from_buffer(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
+    if (pb_encode(&stream, meshtastic_StoreAndForward_fields, &sf)) {
+        p->decoded.payload.size = stream.bytes_written;
+        service.sendToMesh(p);
+    } else {
+        logger.error("Stats too large for packet");
+        packetPool.release(p); // Use global packetPool
+    }
 }
 
 void StoreForwardMessenger::sendHistoryResponse(NodeNum dest, uint32_t historyMessages, uint32_t window, uint32_t lastIndex)
 {
-    logger.info("S&F: Creating history response for node 0x%x: messages=%u, window=%u, lastIndex=%u", dest, historyMessages,
-                window, lastIndex);
+    meshtastic_MeshPacket *p = allocatePacket(dest, meshtastic_PortNum_STORE_FORWARD_APP);
 
-    meshtastic_MeshPacket *p = router->allocForSending();
-    p->to = dest;
-    p->priority = meshtastic_MeshPacket_Priority_BACKGROUND;
-    p->want_ack = false;
-    p->decoded.portnum = meshtastic_PortNum_STORE_FORWARD_APP;
+    // Create and populate history response
+    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_default;
+    sf.rr = meshtastic_StoreAndForward_RequestResponse_UNSET;           // Use UNSET instead of RESPONSE
+    sf.which_payload = meshtastic_StoreAndForward_history_response_tag; // Use payload instead of variant
+    sf.payload.history_response.time_window = window;
+    sf.payload.history_response.message_count = historyMessages;
+    sf.payload.history_response.last_index = lastIndex;
 
-    meshtastic_StoreAndForward msg = meshtastic_StoreAndForward_init_zero;
-    msg.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_HISTORY;
-    msg.which_variant = meshtastic_StoreAndForward_history_tag;
-    msg.variant.history.history_messages = historyMessages;
-    msg.variant.history.window = window;
-
-    p->decoded.payload.size =
-        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &msg);
-
-    logger.info("S&F: Sending history response packet with size %u", p->decoded.payload.size);
-
-    // Fix: service.sendToMesh returns void, can't be used in if statement
-    service.sendToMesh(p);
-    logger.info("S&F: Sent history response to 0x%x: %u messages", dest, historyMessages);
+    // Encode to the packet
+    pb_ostream_t stream = pb_ostream_from_buffer(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
+    if (pb_encode(&stream, meshtastic_StoreAndForward_fields, &sf)) {
+        p->decoded.payload.size = stream.bytes_written;
+        service.sendToMesh(p);
+    } else {
+        logger.error("History response too large for packet");
+        packetPool.release(p); // Use global packetPool
+    }
 }
 
 meshtastic_MeshPacket *StoreForwardMessenger::prepareHistoryPayload(const meshtastic_MeshPacket &historyMessage, NodeNum dest)
 {
-    // Create a S&F packet with the stored message
     meshtastic_MeshPacket *p = allocatePacket(dest, meshtastic_PortNum_STORE_FORWARD_APP);
 
-    // Prepare the S&F payload
-    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
+    // Create and populate history item
+    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_default;
+    sf.rr = meshtastic_StoreAndForward_RequestResponse_UNSET;  // Use UNSET instead of RESPONSE
+    sf.which_payload = meshtastic_StoreAndForward_history_tag; // Use payload instead of variant
 
-    // Determine if this is a broadcast or direct message
-    if (historyMessage.to == NODENUM_BROADCAST) {
-        sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_TEXT_BROADCAST;
+    // Copy the original message into the history item
+    memcpy(&sf.payload.history.message, &historyMessage, sizeof(meshtastic_MeshPacket));
+
+    // Encode to the packet
+    pb_ostream_t stream = pb_ostream_from_buffer(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
+    if (pb_encode(&stream, meshtastic_StoreAndForward_fields, &sf)) {
+        p->decoded.payload.size = stream.bytes_written;
+        return p;
     } else {
-        sf.rr = meshtastic_StoreAndForward_RequestResponse_ROUTER_TEXT_DIRECT;
-    }
-
-    // Set the message data
-    sf.which_variant = meshtastic_StoreAndForward_text_tag;
-
-    // Copy the actual payload - this is the only field we should set in the text variant
-    if (historyMessage.which_payload_variant == meshtastic_MeshPacket_decoded_tag) {
-        sf.variant.text.size = historyMessage.decoded.payload.size;
-        memcpy(sf.variant.text.bytes, historyMessage.decoded.payload.bytes, historyMessage.decoded.payload.size);
-    } else {
-        // Cannot forward an encrypted message
-        logger.warn("S&F: Cannot prepare payload from encrypted message");
-        packetPool.release(p);
+        logger.error("History item too large for packet");
+        packetPool.release(p); // Use global packetPool
         return nullptr;
     }
-
-    // Message metadata will be handled at the MeshPacket level instead of in the payload
-    p->from = historyMessage.from;
-    p->id = historyMessage.id;
-    p->rx_time = historyMessage.rx_time;
-
-    // Encode the protobuf
-    p->decoded.payload.size =
-        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &sf);
-
-    return p;
 }
 
 void StoreForwardMessenger::requestHistory(NodeNum serverNode, uint32_t minutes)
 {
-    if (serverNode == 0) {
-        logger.warn("S&F: No server specified for history request");
-        return;
-    }
-
-    // Create history request
-    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
-    sf.rr = meshtastic_StoreAndForward_RequestResponse_CLIENT_HISTORY;
-
-    // If minutes were specified, include them
-    if (minutes > 0) {
-        sf.which_variant = meshtastic_StoreAndForward_history_tag;
-        sf.variant.history.window = minutes * 60; // Convert to seconds
-    }
-
-    // Prepare and send the request
     meshtastic_MeshPacket *p = allocatePacket(serverNode, meshtastic_PortNum_STORE_FORWARD_APP);
-    p->decoded.payload.size =
-        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &sf);
-    service.sendToMesh(p);
 
-    logger.info("S&F: Requested history from server 0x%x with window %d minutes", serverNode, minutes);
+    // Create and populate history request
+    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_default;
+    sf.rr = meshtastic_StoreAndForward_RequestResponse_UNSET;          // Use UNSET instead of REQUEST
+    sf.which_payload = meshtastic_StoreAndForward_history_request_tag; // Use payload instead of variant
+    sf.payload.history_request.time_window = minutes;
+
+    // Encode to the packet
+    pb_ostream_t stream = pb_ostream_from_buffer(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
+    if (pb_encode(&stream, meshtastic_StoreAndForward_fields, &sf)) {
+        p->decoded.payload.size = stream.bytes_written;
+        service.sendToMesh(p);
+    } else {
+        logger.error("History request too large for packet");
+        packetPool.release(p); // Use global packetPool
+    }
 }
 
 void StoreForwardMessenger::requestStats(NodeNum serverNode)
 {
-    if (serverNode == 0) {
-        logger.warn("S&F: No server specified for stats request");
-        return;
-    }
-
-    // Create stats request
-    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
-    sf.rr = meshtastic_StoreAndForward_RequestResponse_CLIENT_STATS;
-
-    // Prepare and send the request
     meshtastic_MeshPacket *p = allocatePacket(serverNode, meshtastic_PortNum_STORE_FORWARD_APP);
-    p->decoded.payload.size =
-        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &sf);
-    service.sendToMesh(p);
 
-    logger.info("S&F: Requested stats from server 0x%x", serverNode);
+    // Create and populate stats request
+    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_default;
+    sf.rr = meshtastic_StoreAndForward_RequestResponse_UNSET;        // Use UNSET instead of REQUEST
+    sf.which_payload = meshtastic_StoreAndForward_stats_request_tag; // Use payload instead of variant
+
+    // Encode to the packet
+    pb_ostream_t stream = pb_ostream_from_buffer(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
+    if (pb_encode(&stream, meshtastic_StoreAndForward_fields, &sf)) {
+        p->decoded.payload.size = stream.bytes_written;
+        service.sendToMesh(p);
+    } else {
+        logger.error("Stats request too large for packet");
+        packetPool.release(p); // Use global packetPool
+    }
 }
 
 void StoreForwardMessenger::sendPing(NodeNum serverNode)
 {
-    if (serverNode == 0) {
-        logger.warn("S&F: No server specified for ping");
-        return;
+    meshtastic_MeshPacket *p = allocatePacket(serverNode, meshtastic_PortNum_STORE_FORWARD_APP);
+
+    // Create and populate ping
+    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_default;
+    sf.rr = meshtastic_StoreAndForward_RequestResponse_UNSET; // Use UNSET instead of REQUEST
+    sf.which_payload = meshtastic_StoreAndForward_ping_tag;   // Use payload instead of variant
+
+    // Encode to the packet
+    pb_ostream_t stream = pb_ostream_from_buffer(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
+    if (pb_encode(&stream, meshtastic_StoreAndForward_fields, &sf)) {
+        p->decoded.payload.size = stream.bytes_written;
+        service.sendToMesh(p);
+    } else {
+        logger.error("Ping too large for packet");
+        packetPool.release(p); // Use global packetPool
+    }
+}
+
+bool StoreForwardMessenger::sendPayload(NodeNum dest, uint8_t portNum, const uint8_t *payload, size_t len)
+{
+    meshtastic_MeshPacket *p = allocatePacket(dest, (meshtastic_PortNum)portNum);
+
+    if (len > sizeof(p->decoded.payload.bytes)) {
+        len = sizeof(p->decoded.payload.bytes);
     }
 
-    // Create ping request
-    meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
-    sf.rr = meshtastic_StoreAndForward_RequestResponse_CLIENT_PING;
+    memcpy(p->decoded.payload.bytes, payload, len);
+    p->decoded.payload.size = len;
 
-    // Prepare and send the request
-    meshtastic_MeshPacket *p = allocatePacket(serverNode, meshtastic_PortNum_STORE_FORWARD_APP);
-    p->decoded.payload.size =
-        pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_StoreAndForward_msg, &sf);
     service.sendToMesh(p);
+    return true;
+}
 
-    logger.info("S&F: Sent ping to server 0x%x", serverNode);
+bool StoreForwardMessenger::sendText(NodeNum dest, uint8_t portNum, const char *text)
+{
+    size_t len = strlen(text) + 1; // Include null terminator
+    return sendPayload(dest, portNum, (const uint8_t *)text, len);
 }
 
 bool StoreForwardMessenger::sendToNextHop(const meshtastic_MeshPacket &p)
 {
-    // Check if router is available
-    if (router) {
-        // Router doesn't have sendToNextHop method, use send instead
-        return router->send(const_cast<meshtastic_MeshPacket *>(&p)) == ERRNO_OK;
-    } else {
-        logger.warn("S&F: Router not available, cannot forward via next hop");
+    if (!router) {
+        logger.error("Cannot send to next hop without router");
         return false;
     }
+
+    // Create a copy of the packet
+    meshtastic_MeshPacket *copy = router->allocForSending();
+    memcpy(copy, &p, sizeof(meshtastic_MeshPacket));
+
+    // Send to next hop
+    service.sendToMesh(copy);
+    return true;
 }

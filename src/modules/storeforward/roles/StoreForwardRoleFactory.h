@@ -6,18 +6,16 @@
 #include "../interfaces/IStoreForwardRole.h"
 #include <memory>
 
-/**
- * Enumeration of different role types
- */
+// Define the role types
 enum class StoreForwardRoleType {
-    CLIENT,  // Standard client role
-    SERVER,  // Full server role
-    RELAY,   // Relay role (future expansion)
+    SERVER,  // Acts as a store & forward server
+    CLIENT,  // Acts as a client to store & forward servers
+    RELAY,   // Acts as a relay only
     INACTIVE // Role is disabled
 };
 
 /**
- * Factory for creating the appropriate Store & Forward role based on configuration
+ * Factory for creating Store & Forward roles
  */
 class StoreForwardRoleFactory
 {
@@ -26,30 +24,30 @@ class StoreForwardRoleFactory
      * Constructor
      * @param logger The logger to use
      */
-    explicit StoreForwardRoleFactory(ILogger &logger);
+    explicit StoreForwardRoleFactory(ILogger &logger) : logger(logger) {}
 
     /**
-     * Create a role based on the provided configuration and system capabilities
-     * @param messenger The messenger to use for communication
-     * @param historyManager The history manager to use for storage
-     * @param requestedType The requested role type based on configuration
-     * @param hasEnoughMemory Whether the device has enough memory for server operation
-     * @return A unique_ptr to the created role, or nullptr if creation failed
+     * Create a role implementation based on the specified type
+     * @param messenger The messenger to use for network communication
+     * @param historyManager The history manager to use for message storage
+     * @param requestedType The type of role to create
+     * @param hasEnoughMemory Whether there is enough memory for the requested role
+     * @return A role implementation or nullptr if the role could not be created
      */
     std::unique_ptr<IStoreForwardRole> createRole(IStoreForwardMessenger &messenger, IStoreForwardHistoryManager &historyManager,
                                                   StoreForwardRoleType requestedType, bool hasEnoughMemory);
 
     /**
-     * Convert boolean configuration to role type
-     * @param isServer Whether server mode is requested in configuration
+     * Convert config boolean values to a role type
+     * @param isServer Whether the node is configured as a server
      * @param isEnabled Whether the module is enabled
      * @return The appropriate role type
      */
     static StoreForwardRoleType configToRoleType(bool isServer, bool isEnabled);
 
     /**
-     * Check if the device has enough memory for server operation
-     * @return true if there is enough memory available
+     * Check if there is enough memory available for the requested role
+     * @return true if there is enough memory, false otherwise
      */
     bool checkMemoryRequirements() const;
 

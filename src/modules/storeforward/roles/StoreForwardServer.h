@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../interfaces/ILogger.h"
 #include "../interfaces/IStoreForwardHistoryManager.h"
 #include "../interfaces/IStoreForwardMessenger.h"
 #include "../interfaces/IStoreForwardRole.h"
@@ -10,7 +11,7 @@ class StoreForwardServer : public IStoreForwardRole
 {
   public:
     // Updated constructor to use interface types instead of concrete implementations
-    StoreForwardServer(IStoreForwardHistoryManager &historyManager, IStoreForwardMessenger &messenger);
+    StoreForwardServer(IStoreForwardMessenger &messenger, IStoreForwardHistoryManager &historyManager, ILogger &logger);
 
     // Interface implementation
     void onRunOnce() override;
@@ -31,8 +32,9 @@ class StoreForwardServer : public IStoreForwardRole
     meshtastic_MeshPacket *prepareHistoryPayload(NodeNum dest, uint32_t index);
 
   private:
-    IStoreForwardHistoryManager &historyManager;
     IStoreForwardMessenger &messenger;
+    IStoreForwardHistoryManager &historyManager;
+    ILogger &logger;
 
     // Status tracking
     bool busy = false;

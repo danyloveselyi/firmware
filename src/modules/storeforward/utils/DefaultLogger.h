@@ -1,38 +1,34 @@
 #pragma once
 
 #include "../interfaces/ILogger.h"
+#include <cstdarg>
 
 /**
- * Default logger implementation for Store & Forward module
- * Uses the system's DEBUG_PORT for output
+ * Default implementation of the ILogger interface that uses the LOG_* macros
  */
 class DefaultLogger : public ILogger
 {
   public:
-    /**
-     * Constructor
-     * @param defaultLevel The initial log level
-     */
-    DefaultLogger(LogLevel defaultLevel);
+    DefaultLogger() : level(LogLevel::LEVEL_INFO) {}
 
-    // ILogger interface implementation
+    // Implement the log method
     void log(LogLevel level, const char *format, ...) override;
-    void debug(const char *format, ...) override;
-    void info(const char *format, ...) override;
-    void warn(const char *format, ...) override;
-    void error(const char *format, ...) override;
-    void setLevel(LogLevel level) override;
-    LogLevel getLevel() const override;
 
-    /**
-     * Print logger status information
-     * Helper method for diagnostics
-     */
-    void printLoggerStatus();
+    // Basic logging methods
+    void critical(const char *format, ...) override;
+    void error(const char *format, ...) override;
+    void warn(const char *format, ...) override;
+    void info(const char *format, ...) override;
+    void debug(const char *format, ...) override;
+    void trace(const char *format, ...) override;
+
+    // Level management
+    void setLevel(LogLevel level) override { this->level = level; }
+    LogLevel getLevel() const override { return level; }
 
   private:
     LogLevel level;
 };
 
-// Global default logger instance
+// Global instance of the default logger
 extern DefaultLogger defaultLogger;

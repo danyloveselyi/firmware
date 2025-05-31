@@ -1,63 +1,67 @@
 #include "StoreForwardRoleFactory.h"
 #include "StoreForwardClient.h"
 #include "StoreForwardServer.h"
-#include "configuration.h"
 #include <memory>
 
-StoreForwardRoleFactory::StoreForwardRoleFactory(ILogger &logger) : logger(logger) {}
+// Constructor is already defined in the header file, no need to redefine it here
 
 std::unique_ptr<IStoreForwardRole> StoreForwardRoleFactory::createRole(IStoreForwardMessenger &messenger,
                                                                        IStoreForwardHistoryManager &historyManager,
                                                                        StoreForwardRoleType requestedType, bool hasEnoughMemory)
 {
-    bool memoryAvailable = checkMemoryRequirements();
+    // If we're creating a server, we need to make sure we have enough memory
+    bool memoryAvailable = hasEnoughMemory;
+    if (!memoryAvailable && requestedType == StoreForwardRoleType::SERVER) {
+        logger.warn("S&F: Not enough memory for server role, falling back to client");
+    }
 
-    // First check if the module is disabled
     if (requestedType == StoreForwardRoleType::INACTIVE) {
-        logger.info("S&F: Role set to INACTIVE");
-        return nullptr;
+        logger.info("S&F: Creating inactive role");
+        return nullptr; // No role implementation for inactive
     }
 
-    // Check if we have enough memory to run as a server
-    if (requestedType == StoreForwardRoleType::SERVER && (!hasEnoughMemory || !memoryAvailable)) {
-        logger.warn("S&F: Insufficient memory for server role, falling back to client");
-        requestedType = StoreForwardRoleType::CLIENT;
-    }
-
-    // Create the appropriate role based on the type
     switch (requestedType) {
     case StoreForwardRoleType::SERVER:
-        logger.info("S&F: Creating SERVER role");
-        return std::unique_ptr<IStoreForwardRole>(new StoreForwardServer(historyManager, messenger));
+        if (memoryAvailable) {
+            logger.info("S&F: Creating server role");
+            return std::make_unique<StoreForwardServer>(messenger, historyManager, logger);
+        } else {
+            logger.warn("S&F: Not enough memory for server role, falling back to client");
+            // Fall through to client case
+        }
+        [[fallthrough]];
 
     case StoreForwardRoleType::CLIENT:
-        logger.info("S&F: Creating CLIENT role");
-        return std::unique_ptr<IStoreForwardRole>(new StoreForwardClient(messenger));
+        logger.info("S&F: Creating client role");
+        return std::make_unique<StoreForwardClient>(messenger, historyManager, logger);
 
     case StoreForwardRoleType::RELAY:
-        logger.info("S&F: RELAY role not yet implemented, falling back to CLIENT");
-        return std::unique_ptr<IStoreForwardRole>(new StoreForwardClient(messenger));
+        logger.info("S&F: Creating relay role");
+        // No specific relay role yet, use client for now
+        return std::make_unique<StoreForwardClient>(messenger, historyManager, logger);
 
     default:
-        logger.error("S&F: Unknown role type, falling back to CLIENT");
-        return std::unique_ptr<IStoreForwardRole>(new StoreForwardClient(messenger));
+        logger.error("S&F: Unknown role type requested");
+        return nullptr;
     }
 }
 
 StoreForwardRoleType StoreForwardRoleFactory::configToRoleType(bool isServer, bool isEnabled)
 {
-    if (!isEnabled)
+    if (!isEnabled) {
         return StoreForwardRoleType::INACTIVE;
+    }
 
-    if (isServer)
+    if (isServer) {
         return StoreForwardRoleType::SERVER;
+    }
 
     return StoreForwardRoleType::CLIENT;
 }
 
 bool StoreForwardRoleFactory::checkMemoryRequirements() const
 {
-    // Check for available memory to run as a server
-    // This is a simplified version for now
+    // Check if we have enough memory for the server role
+    // This is a placeholder implementation
     return true;
 }
